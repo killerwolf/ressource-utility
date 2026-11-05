@@ -15,6 +15,7 @@ Utilitaire léger en Rust pour la barre des menus macOS qui surveille CPU, mémo
 - Base de connaissances locale (processus système macOS, aides de navigateurs et d'apps Electron) : aucun jeton consommé pour ce qui est connu
 - L'IA ne juge que les processus inconnus, avec un format de réponse strict ; le texte brut du modèle n'est jamais affiché, et les verdicts sont mis en cache à vie
 - Choix du fournisseur (Anthropic, Gemini, OpenAI/Codex, OpenRouter gratuit) et du modèle
+- Sécurité 100 % locale (aucun jeton) : détection de mineurs de cryptomonnaie et de noms système usurpés, emplacements suspects, signature de code, audit du démarrage automatique ; 🛑 dans la barre des menus, sous-menu **Sécurité** (afficher dans le Finder, forcer à quitter avec confirmation)
 - Clé API stockée dans le Trousseau macOS
 - Lancement au démarrage
 - Aucune icône dans le Dock
@@ -57,11 +58,20 @@ Utilitaire léger en Rust pour la barre des menus macOS qui surveille CPU, mémo
 
 Le modèle par défaut est `google/gemma-4-31b-it:free` (un ancien réglage `openrouter/free` est migré automatiquement). Vous pouvez en saisir un autre via **Changer le modèle…**. Le palier gratuit est limité en débit : en cas d'erreur 429, réessayez plus tard.
 
+## Confidentialité : ce qui est envoyé à l'IA
+
+- Rien n'est envoyé tant qu'aucune clé n'est configurée, ni quand tous les processus sont connus (menu **Voir ce qui sera envoyé à l'IA** affiche le texte exact).
+- Analyse : une ligne de métriques (CPU, RAM, disque, température), les alertes actives et, pour les seuls processus inconnus, `nom CPU % mémoire`.
+- Processus jugé suspect localement (et qui n'est pas un mineur connu) : en plus, ses signaux (par ex. « non signé »), l'état de sa signature et son chemin, avec votre dossier personnel remplacé par `~`. Les chemins des processus normaux ne sont jamais envoyés.
+- Les noms sont nettoyés (pas de retours à la ligne ni de `|`, longueur limitée). L'avis de l'IA ne peut qu'aggraver un verdict local, jamais l'adoucir. Le texte brut du modèle n'est jamais affiché.
+- Jamais envoyés : clés, contenu de fichiers, noms d'utilisateur, historique.
+
 ## Développement
 
 ```sh
 cargo run              # lance l'application dans la barre des menus
 cargo run -- --dump    # affiche un instantané des métriques dans le terminal
+cargo run -- --security # audit de sécurité unique (processus + démarrage automatique)
 cargo test             # tests unitaires
 cargo clippy           # analyse statique
 ```

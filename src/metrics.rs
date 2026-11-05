@@ -6,7 +6,7 @@ use sysinfo::{
     System,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ProcInfo {
     pub name: String,
     /// % CPU façon Moniteur d'activité (100 % = un cœur).
@@ -14,12 +14,16 @@ pub struct ProcInfo {
     pub mem: u64,
     /// Nombre de processus regroupés sous ce nom.
     pub count: u32,
+    /// PID de l'instance la plus active du groupe.
+    pub pid: u32,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ProcTop {
     pub by_cpu: Vec<ProcInfo>,
     pub by_mem: Vec<ProcInfo>,
+    /// Processus au nom de mineur connu (quel que soit leur CPU).
+    pub extra: Vec<ProcInfo>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,27 +200,44 @@ impl Sampler {
     fn top_processes(&mut self) -> ProcTop {
         self.sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind());
-        let mut map: HashMap<String, ProcInfo> = HashMap::new();
-        for p in self.sys.processes().values() {
+        let mut map: HashMap<String, (ProcInfo, f32)> = HashMap::new();
+        for (pid, p) in self.sys.processes() {
             let name = p.name().to_string_lossy().into_owned();
-            let e = map.entry(name.clone()).or_insert(ProcInfo {
-                name,
-                cpu: 0.0,
-                mem: 0,
-                count: 0,
-            });
+            let (e, best) = map.entry(name.clone()).or_insert((
+                ProcInfo {
+                    name,
+                    pid: pid.as_u32(),
+                    ..Default::default()
+                },
+                -1.0,
+            ));
             e.cpu += p.cpu_usage();
             e.mem += p.memory();
             e.count += 1;
+            if p.cpu_usage() > *best {
+                *best = p.cpu_usage();
+                e.pid = pid.as_u32();
+            }
         }
-        let all: Vec<ProcInfo> = map.into_values().collect();
+        let all: Vec<ProcInfo> = map.into_values().map(|(p, _)| p).collect();
+        let mut extra: Vec<ProcInfo> = all
+            .iter()
+            .filter(|p| crate::security::miner_name(&p.name).is_some())
+            .take(5)
+            .cloned()
+            .collect();
+        extra.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let mut by_cpu = all.clone();
         by_cpu.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         by_cpu.truncate(5);
         let mut by_mem = all;
         by_mem.sort_by_key(|p| std::cmp::Reverse(p.mem));
         by_mem.truncate(5);
-        ProcTop { by_cpu, by_mem }
+        ProcTop {
+            by_cpu,
+            by_mem,
+            extra,
+        }
     }
 }
 

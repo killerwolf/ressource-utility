@@ -15,6 +15,8 @@ pub struct Config {
     pub thresholds: Thresholds,
     pub launch_at_login: bool,
     pub gate: Gate,
+    /// Exécutables suspects déjà signalés (une seule notification chacun).
+    pub notified_suspects: Vec<String>,
 }
 
 impl Default for Config {
@@ -25,6 +27,7 @@ impl Default for Config {
             thresholds: Thresholds::default(),
             launch_at_login: false,
             gate: Gate::default(),
+            notified_suspects: Vec::new(),
         }
     }
 }

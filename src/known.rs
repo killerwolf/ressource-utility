@@ -31,6 +31,24 @@ impl Verdict {
         }
     }
 
+    /// Gravité pour comparer deux verdicts (l'inconnu compte comme normal).
+    pub fn severity(self) -> u8 {
+        match self {
+            Verdict::Normal | Verdict::Unknown => 0,
+            Verdict::Watch => 1,
+            Verdict::Abnormal => 2,
+        }
+    }
+
+    /// Verdict le plus grave des deux.
+    pub fn max(self, other: Verdict) -> Verdict {
+        if other.severity() > self.severity() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Lecture tolérante (accents, casse, décorations).
     pub fn parse(s: &str) -> Option<Verdict> {
         let t: String = s
@@ -59,6 +77,8 @@ impl Verdict {
 pub struct Known {
     pub verdict: Verdict,
     pub text: String,
+    /// Verdict issu de la couche sécurité (affiché « Suspect »).
+    pub security: bool,
 }
 
 /// Retire ` ×N` et le suffixe entre parenthèses ; garde la casse.
@@ -258,6 +278,7 @@ fn k(verdict: Verdict, text: impl Into<String>) -> Option<Known> {
     Some(Known {
         verdict,
         text: text.into(),
+        security: false,
     })
 }
 

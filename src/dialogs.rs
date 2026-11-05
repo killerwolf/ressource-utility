@@ -75,6 +75,16 @@ pub fn show_text(text: &str) {
     let _ = run(&script);
 }
 
+/// Confirmation à deux boutons ; « Annuler » est le bouton par défaut.
+pub fn confirm(text: &str, ok_label: &str) -> bool {
+    let script = format!(
+        "display dialog \"{}\" buttons {{\"Annuler\", \"{}\"}} default button \"Annuler\" cancel button \"Annuler\" with icon caution with title \"{TITLE}\"",
+        escape(text),
+        escape(ok_label)
+    );
+    matches!(run(&script), Ok((true, out)) if out.contains(&format!("button returned:{ok_label}")))
+}
+
 /// Notification système, sans bloquer l'appelant.
 pub fn notify(message: &str) {
     let script = format!(

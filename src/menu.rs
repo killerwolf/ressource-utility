@@ -3,14 +3,19 @@
 use crate::known::Verdict;
 use crate::llm::Provider;
 use crate::metrics::{ProcTop, Snapshot, fmt_go, fmt_mem};
+use crate::security::Finding;
 use std::cell::RefCell;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 pub const PROC_SLOTS: usize = 5;
+const SEC_SLOTS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Process(usize),
+    SecReveal(usize),
+    SecKill(usize),
+    ShowPrompt,
     FullAdvice,
     Analyze,
     Provider(Provider),
@@ -43,6 +48,12 @@ impl Line {
     }
 }
 
+struct SecSlot {
+    sub: Submenu,
+    reveal: MenuItem,
+    kill: MenuItem,
+}
+
 pub struct AppMenu {
     pub menu: Menu,
     cpu: Line,
@@ -53,6 +64,10 @@ pub struct AppMenu {
     advice: Line,
     full: MenuItem,
     analyze: MenuItem,
+    show_prompt: MenuItem,
+    sec_root: Submenu,
+    sec_status: Line,
+    sec_slots: Vec<SecSlot>,
     providers: Vec<(Provider, CheckMenuItem)>,
     set_key: MenuItem,
     set_model: MenuItem,
@@ -81,6 +96,22 @@ impl AppMenu {
         let advice = Line::new(info("Bilan : en attente des mesures"));
         let full = MenuItem::new("Voir le bilan", true, None);
         let analyze = MenuItem::new("Analyser maintenant", true, None);
+
+        let show_prompt = MenuItem::new("Voir ce qui sera envoyé à l'IA", true, None);
+
+        let sec_root = Submenu::new("✅ Sécurité", true);
+        let sec_status = Line::new(info("Aucun logiciel suspect détecté"));
+        sec_root.append(&sec_status.item)?;
+        let mut sec_slots = Vec::new();
+        for _ in 0..SEC_SLOTS {
+            let sub = Submenu::new("—", false);
+            let reveal = MenuItem::new("Afficher dans le Finder", true, None);
+            let kill = MenuItem::new("Forcer à quitter…", true, None);
+            sub.append(&reveal)?;
+            sub.append(&kill)?;
+            sec_root.append(&sub)?;
+            sec_slots.push(SecSlot { sub, reveal, kill });
+        }
 
         let prov_sub = Submenu::new("Fournisseur IA", true);
         let providers: Vec<(Provider, CheckMenuItem)> = Provider::ALL
@@ -114,6 +145,9 @@ impl AppMenu {
         menu.append(&advice.item)?;
         menu.append(&full)?;
         menu.append(&analyze)?;
+        menu.append(&show_prompt)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&sec_root)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&prov_sub)?;
         menu.append(&autostart)?;
@@ -130,6 +164,10 @@ impl AppMenu {
             advice,
             full,
             analyze,
+            show_prompt,
+            sec_root,
+            sec_status,
+            sec_slots,
             providers,
             set_key,
             set_model,
@@ -145,7 +183,14 @@ impl AppMenu {
         if let Some((p, _)) = self.providers.iter().find(|(_, c)| c.id() == id) {
             return Some(Action::Provider(*p));
         }
+        if let Some(i) = self.sec_slots.iter().position(|s| s.reveal.id() == id) {
+            return Some(Action::SecReveal(i));
+        }
+        if let Some(i) = self.sec_slots.iter().position(|s| s.kill.id() == id) {
+            return Some(Action::SecKill(i));
+        }
         let table = [
+            (self.show_prompt.id(), Action::ShowPrompt),
             (self.full.id(), Action::FullAdvice),
             (self.analyze.id(), Action::Analyze),
             (self.set_key.id(), Action::SetKey),
@@ -196,6 +241,37 @@ impl AppMenu {
                 None => {
                     item.set("—");
                     item.item.set_enabled(false);
+                }
+            }
+        }
+    }
+
+    pub fn update_security(&self, findings: &[Finding]) {
+        use crate::known::Verdict;
+        let worst = if findings.iter().any(|f| f.verdict == Verdict::Abnormal) {
+            "🛑"
+        } else if findings.is_empty() {
+            "✅"
+        } else {
+            "👀"
+        };
+        self.sec_root.set_text(format!("{worst} Sécurité"));
+        self.sec_status.set(if findings.is_empty() {
+            "Aucun logiciel suspect détecté".to_string()
+        } else {
+            format!("{} élément(s) à vérifier", findings.len())
+        });
+        for (i, slot) in self.sec_slots.iter().enumerate() {
+            match findings.get(i) {
+                Some(f) => {
+                    slot.sub
+                        .set_text(format!("{} {}", f.verdict.emoji(), f.name));
+                    slot.sub.set_enabled(true);
+                    slot.kill.set_enabled(f.pid.is_some());
+                }
+                None => {
+                    slot.sub.set_text("—");
+                    slot.sub.set_enabled(false);
                 }
             }
         }

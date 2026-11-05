@@ -12,6 +12,7 @@ mod metrics;
 mod prompt;
 mod report;
 mod secrets;
+mod security;
 
 use anomaly::{Anomaly, Detector, Sample};
 use config::{Config, Explanations};
@@ -19,7 +20,9 @@ use known::Verdict;
 use llm::{LlmError, Provider};
 use menu::{Action, AppMenu, one_line};
 use metrics::{ProcTop, Refresh, Sampler, Snapshot, fmt_go};
+use security::{Auditor, Finding};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
@@ -42,6 +45,11 @@ enum UserEvent {
     ProcAnswer {
         name: String,
         result: Result<(Verdict, String), String>,
+        security: bool,
+    },
+    Security {
+        procs: Option<Vec<Finding>>,
+        startup: Option<Vec<Finding>>,
     },
     KeyStatus(Provider, bool),
     /// Ok(true) = enregistrée, Ok(false) = annulé.
@@ -123,7 +131,16 @@ fn bench(secs: u64) {
         (t(ru.ru_utime) + t(ru.ru_stime), ru.ru_maxrss as f64 / 1e6)
     };
     let (c0, _) = cpu();
-    sample_loop(|_| start.elapsed() < Duration::from_secs(secs));
+    // Comme l'application : analyse des processus à chaque relevé complet,
+    // audit du démarrage automatique une fois au début.
+    let mut auditor = Auditor::new();
+    auditor.audit_startup();
+    sample_loop(|snap| {
+        if let Some(top) = &snap.procs {
+            auditor.scan_processes(top);
+        }
+        start.elapsed() < Duration::from_secs(secs)
+    });
     let (c1, rss) = cpu();
     let wall = start.elapsed().as_secs_f64();
     println!(
@@ -157,6 +174,13 @@ struct App {
     notified: HashMap<String, Instant>,
     title: String,
     title_first: bool,
+    auditor: Arc<Mutex<Auditor>>,
+    proc_findings: Vec<Finding>,
+    startup_findings: Vec<Finding>,
+    findings: Vec<Finding>,
+    scan_running: bool,
+    ai_opinions: HashMap<String, (Verdict, String)>,
+    last_startup: Option<Instant>,
 }
 
 impl App {
@@ -199,6 +223,13 @@ impl App {
             notified: HashMap::new(),
             title: String::new(),
             title_first: true,
+            auditor: Arc::new(Mutex::new(Auditor::new())),
+            proc_findings: Vec::new(),
+            startup_findings: Vec::new(),
+            findings: Vec::new(),
+            scan_running: false,
+            ai_opinions: HashMap::new(),
+            last_startup: None,
         })
     }
 
@@ -213,6 +244,7 @@ impl App {
             top: &self.top,
             cache: &self.explanations,
             th: &self.cfg.thresholds,
+            findings: &self.findings,
             has_key: self.has_key(),
             llm_advice: self.llm_advice.as_deref(),
             error: self.error.as_deref(),
@@ -225,7 +257,7 @@ impl App {
             .top
             .by_cpu
             .iter()
-            .map(|p| report::judge(p, &self.explanations, th).verdict)
+            .map(|p| report::judge(p, &self.explanations, th, &self.findings).verdict)
             .collect();
         self.menu.update_procs(&self.top, &verdicts);
     }
@@ -266,9 +298,41 @@ impl App {
                     }
                 }
             }
-            UserEvent::ProcAnswer { name, result } => {
+            UserEvent::Security { procs, startup } => {
+                if let Some(p) = procs {
+                    self.scan_running = false;
+                    self.proc_findings = p;
+                }
+                if let Some(st) = startup {
+                    self.startup_findings = st;
+                }
+                self.merge_findings();
+            }
+            UserEvent::ProcAnswer {
+                name,
+                result,
+                security,
+            } => {
                 self.pending_procs.remove(&name);
                 match result {
+                    Ok((verdict, text)) if security => {
+                        self.ai_opinions
+                            .insert(known::normalize(&name), (verdict, text.clone()));
+                        self.merge_findings();
+                        let local = self
+                            .findings
+                            .iter()
+                            .find(|f| {
+                                f.startup.is_none()
+                                    && known::normalize(&f.name) == known::normalize(&name)
+                            })
+                            .map(|f| security_dialog(f, Some(&text)));
+                        if let Some(d) = local {
+                            show_dialog(d);
+                        } else {
+                            show_dialog(format!("{} {name}\n\n{text}", verdict.emoji()));
+                        }
+                    }
                     Ok((verdict, text)) => {
                         self.explanations
                             .insert_many([(name.clone(), verdict, text.clone())]);
@@ -328,24 +392,19 @@ impl App {
         let update = self.detector.update(&sample);
         self.active = update.active;
 
-        let warn = if self.active.is_empty() {
-            ""
-        } else {
-            "⚠️ "
-        };
-        let free_g = snap.disk_avail as f64 / 1e9;
-        let title = format!(
-            "{warn}{:.0}% · {:.0}% · {:.0}G",
-            snap.cpu,
-            snap.mem_pct(),
-            free_g
-        );
-        if title != self.title {
-            self.tray.set_title(Some(&title));
-            self.title = title;
-        }
         let procs_fresh = snap.procs.is_some();
         self.last = Some(snap);
+        self.update_title();
+        if procs_fresh {
+            self.spawn_scan();
+        }
+        if self
+            .last_startup
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(30 * 60))
+        {
+            self.last_startup = Some(Instant::now());
+            self.spawn_startup_audit();
+        }
         if procs_fresh || self.title_first {
             self.title_first = false;
             self.refresh_procs_menu();
@@ -355,6 +414,114 @@ impl App {
         if !update.started.is_empty() {
             self.on_anomalies(&update.started);
         }
+    }
+
+    fn update_title(&mut self) {
+        let Some(snap) = &self.last else { return };
+        let prefix = if self.findings.iter().any(|f| f.verdict == Verdict::Abnormal) {
+            "🛑 "
+        } else if self.active.is_empty() {
+            ""
+        } else {
+            "⚠️ "
+        };
+        let title = format!(
+            "{prefix}{:.0}% · {:.0}% · {:.0}G",
+            snap.cpu,
+            snap.mem_pct(),
+            snap.disk_avail as f64 / 1e9
+        );
+        if title != self.title {
+            self.tray.set_title(Some(&title));
+            self.title = title;
+        }
+    }
+
+    fn spawn_scan(&mut self) {
+        if self.scan_running {
+            return;
+        }
+        self.scan_running = true;
+        let (auditor, top, proxy) = (self.auditor.clone(), self.top.clone(), self.proxy.clone());
+        std::thread::spawn(move || {
+            let procs = match auditor.try_lock() {
+                Ok(mut a) => a.scan_processes(&top).findings,
+                Err(_) => Vec::new(),
+            };
+            let _ = proxy.send_event(UserEvent::Security {
+                procs: Some(procs),
+                startup: None,
+            });
+        });
+    }
+
+    fn spawn_startup_audit(&self) {
+        let (auditor, proxy) = (self.auditor.clone(), self.proxy.clone());
+        std::thread::spawn(move || {
+            let startup = auditor
+                .lock()
+                .map(|mut a| a.audit_startup().findings)
+                .unwrap_or_default();
+            let _ = proxy.send_event(UserEvent::Security {
+                procs: None,
+                startup: Some(startup),
+            });
+        });
+    }
+
+    fn merge_findings(&mut self) {
+        let mut all: Vec<Finding> = self
+            .proc_findings
+            .iter()
+            .chain(&self.startup_findings)
+            .cloned()
+            .collect();
+        // Avis de l'IA : peut aggraver, jamais abaisser un verdict local.
+        for f in all.iter_mut().filter(|f| f.startup.is_none()) {
+            if let Some((v, t)) = self.ai_opinions.get(&known::normalize(&f.name)) {
+                f.apply_ai(*v, t);
+            }
+        }
+        all.sort_by_key(|f| f.verdict != Verdict::Abnormal);
+        self.findings = all;
+        for f in self
+            .findings
+            .iter()
+            .filter(|f| f.verdict == Verdict::Abnormal)
+        {
+            let key = f.key();
+            if !self.cfg.notified_suspects.contains(&key) {
+                let home = security::home();
+                let what = match &f.startup {
+                    Some(_) => format!("Démarrage automatique suspect : {}", f.name),
+                    None => format!("🛑 Logiciel suspect : {}", f.name),
+                };
+                dialogs::notify(&format!(
+                    "{what} — {}",
+                    one_line(
+                        &format!(
+                            "{} {}",
+                            f.text(),
+                            f.path
+                                .as_deref()
+                                .map(|p| security::sanitize_path(p, &home))
+                                .unwrap_or_default()
+                        ),
+                        140
+                    )
+                ));
+                self.cfg.notified_suspects.push(key);
+                let n = self.cfg.notified_suspects.len();
+                if n > 200 {
+                    self.cfg.notified_suspects.drain(..n - 200);
+                }
+                self.cfg.save();
+            }
+        }
+        self.menu.update_security(&self.findings);
+        self.update_title();
+        self.refresh_procs_menu();
+        self.refresh_advice_line();
     }
 
     fn on_anomalies(&mut self, started: &[Anomaly]) {
@@ -374,7 +541,7 @@ impl App {
                 dialogs::notify(&format!("⚠️ {}.{hint}", a.detail));
             }
         }
-        let needs_llm = !report::unknown(&self.top, &self.explanations).is_empty();
+        let needs_llm = !report::unknown(&self.top, &self.explanations, &self.findings).is_empty();
         if needs_llm && self.has_key() && !self.busy {
             let sigs: Vec<String> = started.iter().map(Anomaly::signature).collect();
             if self.cfg.gate.try_auto(now_secs(), &sigs) {
@@ -393,7 +560,7 @@ impl App {
         let Some(snap) = self.last.clone() else {
             return;
         };
-        let unknown = report::unknown(&self.top, &self.explanations);
+        let unknown = report::unknown(&self.top, &self.explanations, &self.findings);
         if unknown.is_empty() || !self.has_key() {
             self.llm_advice = None;
             self.finish_analysis(manual);
@@ -438,6 +605,21 @@ impl App {
                 }
             }
             Action::Process(i) => self.ask_process(i),
+            Action::SecReveal(i) => {
+                if let Some(p) = self
+                    .findings
+                    .get(i)
+                    .and_then(|f| f.startup.clone().or_else(|| f.path.clone()))
+                {
+                    reveal_in_finder(p);
+                }
+            }
+            Action::SecKill(i) => {
+                if let Some(f) = self.findings.get(i).cloned() {
+                    std::thread::spawn(move || force_quit(f));
+                }
+            }
+            Action::ShowPrompt => show_dialog(self.outgoing_prompt()),
             Action::Provider(p) => {
                 self.cfg.provider = p;
                 self.menu.set_provider(p);
@@ -491,12 +673,45 @@ impl App {
         false
     }
 
+    /// Texte exact qui serait envoyé à l'IA pour la prochaine analyse.
+    fn outgoing_prompt(&self) -> String {
+        let unknown = report::unknown(&self.top, &self.explanations, &self.findings);
+        let Some(snap) = &self.last else {
+            return "Rien : aucune mesure disponible pour l'instant.".into();
+        };
+        if unknown.is_empty() {
+            return "Rien : tous les processus sont connus, aucune donnée n'est envoyée.".into();
+        }
+        let alerts: Vec<&str> = self.active.iter().map(|a| a.kind.label()).collect();
+        format!(
+            "Message système :\n{}\n\nMessage envoyé :\n{}",
+            prompt::SYSTEM,
+            prompt::analysis(snap, &alerts, &unknown)
+        )
+    }
+
     fn ask_process(&mut self, i: usize) {
         let Some(info) = self.top.by_cpu.get(i).cloned() else {
             return;
         };
         let name = known::strip_decor(&info.name).to_string();
-        let k = report::judge(&info, &self.explanations, &self.cfg.thresholds);
+        let finding = self
+            .findings
+            .iter()
+            .find(|f| f.startup.is_none() && known::normalize(&f.name) == known::normalize(&name))
+            .cloned();
+        if let Some(f) = &finding
+            && (f.miner || !self.has_key())
+        {
+            show_dialog(security_dialog(f, None));
+            return;
+        }
+        let k = report::judge(
+            &info,
+            &self.explanations,
+            &self.cfg.thresholds,
+            &self.findings,
+        );
         if k.verdict != Verdict::Unknown {
             show_dialog(format!(
                 "{} {name} — {}\n\n{}",
@@ -515,7 +730,19 @@ impl App {
         if !self.pending_procs.insert(info.name.clone()) {
             return;
         }
-        let user = prompt::process(&info);
+        let user = match &finding {
+            Some(f) => prompt::process_security(
+                &info,
+                &f.reasons,
+                f.path
+                    .as_deref()
+                    .map(|p| security::sanitize_path(p, &security::home()))
+                    .as_deref(),
+                f.signature,
+            ),
+            None => prompt::process(&info),
+        };
+        let is_security = finding.is_some();
         let sent = vec![info.name.clone()];
         let (provider, model) = (self.cfg.provider, self.cfg.model(self.cfg.provider));
         let proxy = self.proxy.clone();
@@ -538,8 +765,88 @@ impl App {
             let _ = proxy.send_event(UserEvent::ProcAnswer {
                 name: info.name,
                 result,
+                security: is_security,
             });
         });
+    }
+}
+
+/// Texte du dialogue pour un élément de sécurité (avis IA optionnel).
+fn security_dialog(f: &Finding, ai: Option<&str>) -> String {
+    let home = security::home();
+    let label = if f.verdict == Verdict::Abnormal {
+        "Suspect"
+    } else {
+        "À surveiller"
+    };
+    let mut t = format!("{} {} — {label}\n\n{}", f.verdict.emoji(), f.name, f.text());
+    if let Some(p) = &f.path {
+        t.push_str(&format!(
+            "\n\nProgramme : {}",
+            security::sanitize_path(p, &home)
+        ));
+    }
+    if let Some(a) = ai {
+        t.push_str(&format!("\n\nAvis de l'IA : {a}"));
+    }
+    t
+}
+
+fn reveal_in_finder(path: String) {
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .args(["-R", &path])
+            .status();
+    });
+}
+
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 = simple test d'existence.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Confirmation puis arrêt : TERM, puis KILL au bout de 3 s si besoin.
+fn force_quit(f: Finding) {
+    let Some(pid) = f.pid else { return };
+    let protected = pid <= 1
+        || pid == std::process::id()
+        || f.path.as_deref().is_none_or(security::is_system_path);
+    if protected {
+        dialogs::notify("Refusé : ce processus système ou illisible est protégé.");
+        return;
+    }
+    let msg = format!(
+        "Forcer « {} » (PID {pid}) à quitter ?\n\n{}",
+        f.name,
+        f.text()
+    );
+    if !dialogs::confirm(&msg, "Forcer à quitter") {
+        return;
+    }
+    if security::pid_path(pid) != f.path {
+        dialogs::notify("Le processus a changé entre-temps : abandon.");
+        return;
+    }
+    let p = pid as i32;
+    // SAFETY: envoi de signaux à un PID vérifié ci-dessus.
+    unsafe { libc::kill(p, libc::SIGTERM) };
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(500));
+        if !alive(p) {
+            dialogs::notify(&format!("{} a été arrêté.", f.name));
+            return;
+        }
+    }
+    // SAFETY: idem.
+    unsafe { libc::kill(p, libc::SIGKILL) };
+    std::thread::sleep(Duration::from_millis(500));
+    if alive(p) {
+        dialogs::notify(&format!(
+            "Impossible d'arrêter {} (droits insuffisants ?).",
+            f.name
+        ));
+    } else {
+        dialogs::notify(&format!("{} a été arrêté de force.", f.name));
     }
 }
 
@@ -641,7 +948,7 @@ fn dump() {
         let cfg = Config::load();
         let cache = Explanations::load();
         let snap2 = s.sample(Refresh::NONE);
-        let unknown = report::unknown(&top, &cache);
+        let unknown = report::unknown(&top, &cache, &[]);
         println!(
             "\nProcessus à soumettre au LLM : {} (0 = aucun appel nécessaire)",
             unknown.len()
@@ -656,6 +963,7 @@ fn dump() {
             top: &top,
             cache: &cache,
             th: &cfg.thresholds,
+            findings: &[],
             has_key: false,
             llm_advice: None,
             error: None,
@@ -667,7 +975,60 @@ fn dump() {
     }
 }
 
+/// `--security` : audit complet unique (processus + démarrage automatique).
+fn security_cli() {
+    let mut sampler = match Sampler::new() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sysinfo indisponible : {e}");
+            return;
+        }
+    };
+    let mut auditor = Auditor::new();
+    let mut out = None;
+    // Trois relevés rapprochés pour que le suivi « CPU soutenu » puisse jouer.
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(1200));
+        if let Some(top) = sampler.sample(Refresh::ALL).procs {
+            out = Some(auditor.scan_processes(&top));
+        }
+    }
+    println!("== Processus inspectés ==");
+    if let Some(o) = &out {
+        for l in &o.inspected {
+            println!("  {l}");
+        }
+    }
+    let startup = auditor.audit_startup();
+    println!(
+        "== Démarrage automatique ({} éléments lus) ==",
+        startup.inspected.len()
+    );
+    let all: Vec<&Finding> = out
+        .iter()
+        .flat_map(|o| &o.findings)
+        .chain(&startup.findings)
+        .collect();
+    println!("== Résultat ==");
+    if all.is_empty() {
+        println!("✅ Aucun logiciel suspect détecté");
+    }
+    for f in all {
+        println!(
+            "{} {} — {} [{}]",
+            f.verdict.emoji(),
+            f.name,
+            f.text(),
+            f.path.as_deref().unwrap_or("?")
+        );
+    }
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--security") {
+        security_cli();
+        return;
+    }
     if std::env::args().any(|a| a == "--dump") {
         dump();
         return;

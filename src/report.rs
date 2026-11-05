@@ -4,22 +4,32 @@ use crate::anomaly::Thresholds;
 use crate::config::Explanations;
 use crate::known::{self, Known, Verdict};
 use crate::metrics::{ProcInfo, ProcTop, Snapshot, fmt_go, fmt_mem};
+use crate::security::{self, Finding};
 
 const HEAVY_MEM: u64 = 2_500_000_000;
 
 /// Verdict + explication d'un processus : base locale, puis cache LLM.
 /// Un processus « normal » qui pèse lourd passe en « à surveiller ».
-pub fn judge(p: &ProcInfo, cache: &Explanations, th: &Thresholds) -> Known {
+pub fn judge(p: &ProcInfo, cache: &Explanations, th: &Thresholds, findings: &[Finding]) -> Known {
+    let key = known::normalize(&p.name);
+    if let Some(f) = findings
+        .iter()
+        .find(|f| f.startup.is_none() && known::normalize(&f.name) == key)
+    {
+        return security::judged_known(f, &security::home());
+    }
     let base = known::lookup(&p.name)
         .or_else(|| {
             cache.get(&p.name).map(|c| Known {
                 verdict: c.verdict,
                 text: c.text.clone(),
+                security: false,
             })
         })
         .unwrap_or(Known {
             verdict: Verdict::Unknown,
             text: String::new(),
+            security: false,
         });
     if base.verdict != Verdict::Normal {
         return base;
@@ -38,6 +48,7 @@ pub fn judge(p: &ProcInfo, cache: &Explanations, th: &Thresholds) -> Known {
         Some(e) => Known {
             verdict: Verdict::Watch,
             text: format!("{} {e}", base.text),
+            security: false,
         },
         None => base,
     }
@@ -58,10 +69,16 @@ pub fn rows(top: &ProcTop) -> Vec<&ProcInfo> {
 }
 
 /// Processus à soumettre au LLM : ni connus localement, ni en cache (6 au plus).
-pub fn unknown(top: &ProcTop, cache: &Explanations) -> Vec<ProcInfo> {
+pub fn unknown(top: &ProcTop, cache: &Explanations, findings: &[Finding]) -> Vec<ProcInfo> {
     rows(top)
         .into_iter()
-        .filter(|p| known::lookup(&p.name).is_none() && cache.get(&p.name).is_none())
+        .filter(|p| {
+            known::lookup(&p.name).is_none()
+                && cache.get(&p.name).is_none()
+                && !findings
+                    .iter()
+                    .any(|f| known::normalize(&f.name) == known::normalize(&p.name))
+        })
         .take(6)
         .cloned()
         .collect()
@@ -74,6 +91,7 @@ pub struct Counts {
     pub abnormal: usize,
     pub unknown: usize,
     pub alerts: usize,
+    pub suspects: usize,
 }
 
 pub struct Report {
@@ -88,6 +106,7 @@ pub struct Inputs<'a> {
     pub top: &'a ProcTop,
     pub cache: &'a Explanations,
     pub th: &'a Thresholds,
+    pub findings: &'a [Finding],
     pub has_key: bool,
     pub llm_advice: Option<&'a str>,
     pub error: Option<&'a str>,
@@ -174,11 +193,51 @@ pub fn build(i: &Inputs) -> Report {
 
     let mut counts = Counts {
         alerts: warns.len(),
+        suspects: i
+            .findings
+            .iter()
+            .filter(|f| f.verdict == Verdict::Abnormal)
+            .count(),
         ..Default::default()
     };
+    let home = security::home();
+    text.push_str("\nSécurité\n");
+    if i.findings.is_empty() {
+        text.push_str("✅ Aucun logiciel suspect détecté\n");
+    }
+    let mut sorted: Vec<&Finding> = i.findings.iter().collect();
+    sorted.sort_by_key(|f| f.verdict != Verdict::Abnormal);
+    for f in sorted {
+        let emoji = f.verdict.emoji();
+        match &f.startup {
+            Some(_) => {
+                let target = f
+                    .path
+                    .as_deref()
+                    .map(|p| security::sanitize_path(p, &home))
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "{emoji} Démarrage automatique : {} → {target} ({})\n",
+                    f.name,
+                    f.reasons.join(", ")
+                ));
+            }
+            None => {
+                let loc = f
+                    .path
+                    .as_deref()
+                    .map(|p| format!(" [{}]", security::sanitize_path(p, &home)))
+                    .unwrap_or_default();
+                text.push_str(&format!("{emoji} {} — {}{loc}\n", f.name, f.text()));
+                if let Some(a) = &f.ai {
+                    text.push_str(&format!("   Avis de l'IA : {a}\n"));
+                }
+            }
+        }
+    }
     text.push_str("\nCe qui tourne\n");
     for p in rows(i.top) {
-        let k = judge(p, i.cache, th);
+        let k = judge(p, i.cache, th, i.findings);
         match k.verdict {
             Verdict::Normal => counts.normal += 1,
             Verdict::Watch => counts.watch += 1,
@@ -204,7 +263,11 @@ pub fn build(i: &Inputs) -> Report {
             "{} {}{count} — {}\n   {detail}\n",
             k.verdict.emoji(),
             known::strip_decor(&p.name),
-            k.verdict.label()
+            if k.security && k.verdict == Verdict::Abnormal {
+                "Suspect"
+            } else {
+                k.verdict.label()
+            }
         ));
     }
 
@@ -223,6 +286,9 @@ pub fn build(i: &Inputs) -> Report {
     }
 
     let mut parts: Vec<String> = Vec::new();
+    if counts.suspects > 0 {
+        parts.push(plural(counts.suspects, "suspect", "suspects"));
+    }
     if counts.alerts > 0 {
         parts.push(plural(counts.alerts, "alerte système", "alertes système"));
     }
@@ -243,7 +309,12 @@ pub fn build(i: &Inputs) -> Report {
     } else {
         format!("Bilan : {}", parts.join(", "))
     };
-    let notify = if counts.abnormal > 0 {
+    let notify = if counts.suspects > 0 {
+        format!(
+            "Bilan prêt : {}",
+            plural(counts.suspects, "logiciel suspect", "logiciels suspects")
+        )
+    } else if counts.abnormal > 0 {
         format!(
             "Bilan prêt : {}",
             plural(counts.abnormal, "processus anormal", "processus anormaux")
@@ -281,6 +352,7 @@ mod tests {
             cpu,
             mem,
             count,
+            pid: 0,
         }
     }
 
@@ -303,6 +375,7 @@ mod tests {
                 p("mystery_d", 10.0, 90_000_000, 1),
             ],
             by_mem: vec![p("Google Chrome Helper (Renderer)", 3.0, 3_700_000_000, 12)],
+            extra: vec![],
         }
     }
 
@@ -322,6 +395,7 @@ mod tests {
             top: &top(),
             cache: &cache,
             th: &th,
+            findings: &[],
             has_key: true,
             llm_advice: Some("Redémarre le Mac ce soir."),
             error: None,
@@ -330,6 +404,9 @@ mod tests {
 État du Mac
 ⚠️ Disque presque plein : 10 Go libres (4 %)
 ✅ CPU 22 % · Mémoire 52 % · 45 °C — normal
+
+Sécurité
+✅ Aucun logiciel suspect détecté
 
 Ce qui tourne
 ✅ avconferenced — Normal
@@ -359,6 +436,7 @@ Ce qui tourne
             top: &top(),
             cache: &cache,
             th: &th,
+            findings: &[],
             has_key: false,
             llm_advice: None,
             error: Some("Réseau indisponible"),
@@ -381,10 +459,10 @@ Ce qui tourne
     fn all_known_means_nothing_to_ask() {
         let mut t = top();
         t.by_cpu.pop();
-        assert!(unknown(&t, &Explanations::default()).is_empty());
+        assert!(unknown(&t, &Explanations::default(), &[]).is_empty());
         // Avec l'inconnu, il est proposé au LLM ; une fois en cache, plus.
         let mut cache = Explanations::default();
-        assert_eq!(unknown(&top(), &cache).len(), 1);
+        assert_eq!(unknown(&top(), &cache, &[]).len(), 1);
         cache.0.insert(
             "mystery_d".into(),
             CachedVerdict {
@@ -392,7 +470,7 @@ Ce qui tourne
                 text: "x".into(),
             },
         );
-        assert!(unknown(&top(), &cache).is_empty());
+        assert!(unknown(&top(), &cache, &[]).is_empty());
     }
 
     #[test]
@@ -405,7 +483,12 @@ Ce qui tourne
                 text: "Suspect.".into(),
             },
         );
-        let k = judge(&p("mystery_d", 1.0, 1, 1), &cache, &Thresholds::default());
+        let k = judge(
+            &p("mystery_d", 1.0, 1, 1),
+            &cache,
+            &Thresholds::default(),
+            &[],
+        );
         assert_eq!(k.verdict, Verdict::Abnormal);
     }
 }
