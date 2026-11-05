@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Scènes</title>
+<link rel="stylesheet" href="ui.css"></head>
+<body><div id="root"></div>
+<script src="ui.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  const r = RU.render(q.get("scene") || "menu", q.get("theme") || "dark");
+  document.getElementById("root").innerHTML = r.html;
+  document.title = r.w + "x" + r.h;
+</script></body></html>

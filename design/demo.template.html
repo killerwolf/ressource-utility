@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<title>Démo — Ressource Utility (illustration)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*__CSS__*/
+html,body{margin:0;height:100%;background:#0b0d22;overflow:hidden}
+#stage{position:absolute;left:0;top:0;transform-origin:0 0}
+</style></head>
+<body><div id="stage"></div>
+<script>window.RU_ICON="__ICON__";</script>
+<script>/*__UI__*/</script>
+<script>/*__DEMO__*/</script>
+<script>
+(function () {
+  const stage = document.getElementById("stage");
+  const D = RU.demo;
+  const fit = () => { const s = Math.min(innerWidth / D.W, innerHeight / D.H); stage.style.transform = `scale(${s})`;
+    stage.style.left = (innerWidth - D.W * s) / 2 + "px"; stage.style.top = (innerHeight - D.H * s) / 2 + "px"; };
+  addEventListener("resize", fit); fit();
+  const draw = (t) => { stage.innerHTML = D.html(t); };
+  window.__draw = draw; window.__dur = D.DUR;
+  const q = new URLSearchParams(location.search);
+  if (q.has("t")) { draw(parseFloat(q.get("t"))); return; }
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) { draw(9.2); return; }
+  let t0 = performance.now();
+  (function loop(now) { draw(((now - t0) / 1000) % D.DUR); requestAnimationFrame(loop); })(t0);
+})();
+</script></body></html>

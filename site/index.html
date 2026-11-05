@@ -65,6 +65,15 @@
       .hero .alt { margin-top: 14px; font-size: .9rem; color: #aab0d6; }
       .hero .alt a { color: #cfe9ff; }
 
+      .demo { max-width: 880px; margin: 40px auto 0; border-radius: 16px; overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.14); background: #0b0d22; }
+      .demo video { display: block; width: 100%; height: auto; }
+      .demo-note { margin: 10px 0 0; font-size: .82rem; color: #9aa0c4; }
+      .demo-note a { color: #cfe9ff; }
+      .gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-top: 30px; }
+      @media (max-width: 760px) { .gallery { grid-template-columns: 1fr; } }
+      .gallery figure img { display: block; width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--line); }
+      .gallery figure.wide { grid-column: 1 / -1; }
       .section { padding: 64px 0 0; }
       h2 { margin: 0; font-size: clamp(1.4rem, 3.2vw, 1.95rem); letter-spacing: -0.02em; }
       .sub { margin: 10px 0 0; color: var(--fg-mut); max-width: 66ch; }
@@ -112,6 +121,13 @@
           </a>
           <p class="alt">Gratuit, open source (MIT) · <a href="https://github.com/killerwolf/ressource-utility">Code sur GitHub</a></p>
         </div>
+        <div class="demo">
+          <video id="demo" autoplay muted loop playsinline preload="metadata" poster="demo-poster.png"
+            width="1280" height="800" aria-label="Démo animée : un processus xmrig est détecté, expliqué puis arrêté ; ensuite le bilan de santé et les réglages (illustration, données fictives).">
+            <source src="demo.mp4" type="video/mp4" />
+          </video>
+        </div>
+        <p class="demo-note">Illustration animée, avec des données fictives · <a href="demo.html">version vectorielle</a></p>
       </div>
     </header>
 
@@ -155,11 +171,58 @@ Ce qui tourne
               <figcaption>Le texte du bilan, tel que l'application l'écrit (sortie réelle sur un Mac, sans clé IA configurée : les processus qu'elle ne connaît pas restent « Inconnu »).</figcaption>
             </figure>
             <figure>
-              <img class="shot" src="settings.png" width="440" height="420"
-                alt="Fenêtre Réglages, section Général (lancement au démarrage) et section Intelligence artificielle : fournisseur OpenRouter (gratuit), modèle, clé API enregistrée dans le Trousseau, lien « Voir ce qui est envoyé à l'IA… » et boutons Tester, Annuler, Enregistrer." />
-              <figcaption>La fenêtre <strong>Réglages</strong> : une section Général, une section Intelligence artificielle (fournisseur, modèle, clé API dans le Trousseau macOS, bouton <em>Tester</em>).</figcaption>
+              <picture>
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/processus-dialog.webp" type="image/webp" />
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/processus-dialog.png" />
+                <source srcset="mockups/processus-dialog-light.webp" type="image/webp" />
+                <img class="shot" src="mockups/processus-dialog-light.png" width="780" height="390" loading="lazy"
+                  alt="Dialogue d'un processus : « Google Chrome Helper — À surveiller », l'explication en français et les boutons Afficher dans le Finder, Forcer à quitter, OK." />
+              </picture>
+              <figcaption>Un clic sur un processus : verdict, explication, et les actions possibles. <em>Illustration.</em></figcaption>
             </figure>
           </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>L'interface en images</h2>
+          <p class="sub">Une phrase d'état, les mesures avec leurs courbes, une liste de processus avec un verdict, un bilan, des réglages. Rien d'autre.</p>
+          <div class="gallery">
+            <figure class="wide">
+              <picture>
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/menu-dark.webp" type="image/webp" />
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/menu-dark.png" />
+                <source srcset="mockups/menu-light.webp" type="image/webp" />
+                <img src="mockups/menu-light.png" width="820" height="500" loading="lazy" alt="Le menu de la barre des menus : phrase d'état, CPU, mémoire, disque et température avec mini-courbes, puis Processus, Bilan de santé, Réglages (⌘,) et Quitter (⌘Q)." />
+              </picture>
+            </figure>
+            <figure>
+              <picture>
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/processus.webp" type="image/webp" />
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/processus.png" />
+                <source srcset="mockups/processus-light.webp" type="image/webp" />
+                <img src="mockups/processus-light.png" width="880" height="500" loading="lazy" alt="Le sous-menu Processus avec un emoji de verdict devant chaque ligne." />
+              </picture>
+            </figure>
+            <figure>
+              <picture>
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/bilan-dark.webp" type="image/webp" />
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/bilan-dark.png" />
+                <source srcset="mockups/bilan.webp" type="image/webp" />
+                <img src="mockups/bilan.png" width="860" height="610" loading="lazy" alt="Le dialogue Bilan de santé : état du Mac, sécurité et verdict par processus." />
+              </picture>
+            </figure>
+            <figure>
+              <picture>
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/reglages-dark.webp" type="image/webp" />
+                <source media="(prefers-color-scheme: dark)" srcset="mockups/reglages-dark.png" />
+                <source srcset="mockups/reglages.webp" type="image/webp" />
+                <img src="mockups/reglages.png" width="640" height="560" loading="lazy" alt="La fenêtre Réglages : Général et Intelligence artificielle." />
+              </picture>
+            </figure>
+          </div>
+          <p class="sub" style="font-size:.85rem">Illustrations recréées en HTML/CSS à partir de l'interface réelle ; les chiffres sont fictifs. Le texte du bilan ci-dessus est, lui, une sortie réelle de l'application.</p>
         </div>
       </section>
 
@@ -224,5 +287,14 @@ Ce qui tourne
         <p>© 2026 Hamdi LAADHARI</p>
       </div>
     </footer>
+    <script>
+      // Respecte « réduire les animations » : la vidéo reste sur l'image d'affiche.
+      (function () {
+        var v = document.getElementById("demo");
+        if (v && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          v.removeAttribute("autoplay"); v.pause(); v.setAttribute("controls", "");
+        }
+      })();
+    </script>
   </body>
 </html>

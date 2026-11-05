@@ -15,14 +15,24 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/.github/assets/settings.png" alt="Fenêtre Réglages : fournisseur, modèle, clé API dans le Trousseau, lancement au démarrage, boutons Tester, Annuler et Enregistrer." width="440" />
+  <img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/.github/assets/demo.gif" alt="Démo animée (illustration) : un processus xmrig fait monter le CPU, la barre des menus passe en 🛑, la liste Processus le place en premier, un dialogue explique pourquoi, puis on le force à quitter ; ensuite le Bilan de santé et les Réglages." width="720" />
 </p>
+<p align="center"><sub>Illustration animée, avec des données fictives (<a href="https://h4md1.fr/ressource-utility/demo.html">version vectorielle</a>).</sub></p>
 
 <p align="center">
   <a href="https://h4md1.fr/ressource-utility/">Site</a> ·
   <a href="https://github.com/killerwolf/ressource-utility/releases/latest">Télécharger</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
+
+<table>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/site/mockups/menu-dark.png" alt="Le menu : phrase d'état, mesures avec mini-courbes, Processus, Bilan de santé, Réglages, Quitter." width="360" /><br /><sub>Le menu</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/site/mockups/processus-dialog.png" alt="Dialogue d'un processus : verdict, explication et boutons." width="360" /><br /><sub>Un processus expliqué</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/site/mockups/reglages.png" alt="Fenêtre Réglages : Général et Intelligence artificielle." width="240" /><br /><sub>Les Réglages</sub></td>
+  </tr>
+</table>
+<p align="center"><sub>Illustrations recréées en HTML/CSS à partir de l'interface réelle (données fictives).</sub></p>
 
 Le texte du bilan, tel que l'application l'écrit (sortie réelle, sans clé IA configurée) :
 
