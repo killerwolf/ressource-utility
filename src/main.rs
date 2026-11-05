@@ -2,8 +2,10 @@
 
 mod anomaly;
 mod autostart;
+mod chart;
 mod config;
 mod dialogs;
+mod history;
 mod icon;
 mod known;
 mod llm;
@@ -13,14 +15,17 @@ mod prompt;
 mod report;
 mod secrets;
 mod security;
+mod settings;
 
 use anomaly::{Anomaly, Detector, Sample};
 use config::{Config, Explanations};
+use history::History;
 use known::Verdict;
 use llm::{LlmError, Provider};
 use menu::{Action, AppMenu, one_line};
 use metrics::{ProcTop, Refresh, Sampler, Snapshot, fmt_go};
 use security::{Auditor, Finding};
+use settings::{SettingsAction, SettingsWindow};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,6 +33,7 @@ use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{MenuEvent, MenuId};
+use tray_icon::menu::{PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 const SAMPLE_EVERY: Duration = Duration::from_secs(3);
@@ -54,7 +60,10 @@ enum UserEvent {
     KeyStatus(Provider, bool),
     /// Ok(true) = enregistrée, Ok(false) = annulé.
     KeyEntered(Provider, Result<bool, String>),
-    ModelChosen(Provider, String),
+    Settings(SettingsAction),
+    ModelsLoaded(Provider, Result<Vec<String>, String>),
+    TestResult(String),
+    KeyDeleted(Provider, Result<(), String>),
 }
 
 fn now_secs() -> u64 {
@@ -181,6 +190,9 @@ struct App {
     scan_running: bool,
     ai_opinions: HashMap<String, (Verdict, String)>,
     last_startup: Option<Instant>,
+    settings: Option<SettingsWindow>,
+    history: History,
+    _main_menu: tray_icon::menu::Menu,
 }
 
 impl App {
@@ -203,6 +215,26 @@ impl App {
                 let _ = p.send_event(UserEvent::KeyStatus(prov, secrets::get(prov).is_some()));
             }
         });
+
+        // Menu principal caché : donne Cmd+C / Cmd+V / Cmd+A aux champs de saisie
+        // (une app « accessoire » n'a pas de menu Édition par défaut).
+        let main_menu = tray_icon::menu::Menu::new();
+        if let Ok(edit) = Submenu::with_items(
+            "Édition",
+            true,
+            &[
+                &PredefinedMenuItem::undo(None),
+                &PredefinedMenuItem::redo(None),
+                &PredefinedMenuItem::separator(),
+                &PredefinedMenuItem::cut(None),
+                &PredefinedMenuItem::copy(None),
+                &PredefinedMenuItem::paste(None),
+                &PredefinedMenuItem::select_all(None),
+            ],
+        ) {
+            let _ = main_menu.append(&edit);
+        }
+        main_menu.init_for_nsapp();
 
         let detector = Detector::new(cfg.thresholds.clone());
         Some(Self {
@@ -230,11 +262,15 @@ impl App {
             scan_running: false,
             ai_opinions: HashMap::new(),
             last_startup: None,
+            settings: None,
+            history: History::default(),
+            _main_menu: main_menu,
         })
     }
 
     fn has_key(&self) -> bool {
-        self.keys.get(&self.cfg.provider).copied().unwrap_or(false)
+        self.cfg.provider == Provider::LmStudio
+            || self.keys.get(&self.cfg.provider).copied().unwrap_or(false)
     }
 
     fn build_report(&self) -> Option<report::Report> {
@@ -361,14 +397,24 @@ impl App {
                 Ok(false) => {}
                 Err(e) => dialogs::notify(&e),
             },
-            UserEvent::ModelChosen(p, model) => {
-                let model = model.trim().to_string();
-                if !model.is_empty() {
-                    self.cfg.models.insert(p.id().to_string(), model.clone());
-                    self.cfg.save();
-                    dialogs::notify(&format!("Modèle {} : {model}", p.label()));
+            UserEvent::Settings(a) => self.on_settings(a),
+            UserEvent::ModelsLoaded(p, res) => self.on_models_loaded(p, res),
+            UserEvent::TestResult(t) => {
+                if let Some(w) = &self.settings {
+                    w.set_status(&t);
                 }
             }
+            UserEvent::KeyDeleted(p, res) => match res {
+                Ok(()) => {
+                    self.keys.insert(p, false);
+                    if let Some(w) = &self.settings {
+                        w.set_key_exists(false);
+                        w.set_status("Clé supprimée du Trousseau.");
+                    }
+                    self.refresh_advice_line();
+                }
+                Err(e) => dialogs::notify(&e),
+            },
         }
         false
     }
@@ -378,6 +424,12 @@ impl App {
             self.top = top.clone();
         }
         self.menu.update_metrics(&snap);
+        if self
+            .history
+            .record(Instant::now(), snap.cpu, snap.mem_pct(), snap.temp)
+        {
+            self.menu.update_charts(&self.history);
+        }
 
         let sample = Sample {
             cpu: snap.cpu,
@@ -571,11 +623,12 @@ impl App {
         let sent: Vec<String> = unknown.iter().map(|p| p.name.clone()).collect();
         let max_tokens = prompt::analysis_tokens(unknown.len());
         let (provider, model) = (self.cfg.provider, self.cfg.model(self.cfg.provider));
+        let base = self.cfg.lmstudio_base_url.clone();
         self.busy = true;
         self.menu.set_busy(true);
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = call_llm(provider, &model, prompt::SYSTEM, &user, max_tokens)
+            let result = call_llm(provider, &model, &base, prompt::SYSTEM, &user, max_tokens)
                 .and_then(|t| prompt::parse_reply(&t, &sent).map_err(String::from));
             let _ = proxy.send_event(UserEvent::Analysis { result, manual });
         });
@@ -590,6 +643,196 @@ impl App {
                 show_dialog(r.text);
             }
         }
+    }
+
+    fn view_for(&self, p: Provider) -> (String, Vec<String>, bool) {
+        let suggestions = match p {
+            Provider::OpenRouter => {
+                let c = config::ModelCache::load();
+                if c.models.is_empty() {
+                    llm::suggested_models(p)
+                } else {
+                    c.models
+                }
+            }
+            _ => llm::suggested_models(p),
+        };
+        let key_exists = self.keys.get(&p).copied().unwrap_or(false);
+        (self.cfg.model(p), suggestions, key_exists)
+    }
+
+    fn show_provider(&self, p: Provider) {
+        let Some(w) = &self.settings else { return };
+        let (model, suggestions, key_exists) = self.view_for(p);
+        w.show(&settings::View {
+            provider: p,
+            model: &model,
+            suggestions: &suggestions,
+            key_exists,
+            base_url: &self.cfg.lmstudio_base_url,
+        });
+        match p {
+            Provider::LmStudio => {
+                w.set_status("Recherche des modèles LM Studio…");
+                self.fetch_models(p, self.cfg.lmstudio_base_url.clone());
+            }
+            Provider::OpenRouter if !config::ModelCache::load().fresh(now_secs()) => {
+                self.fetch_models(p, String::new());
+            }
+            _ => {}
+        }
+    }
+
+    fn fetch_models(&self, p: Provider, base: String) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let res = llm::list_models(p, &base).map_err(|e| e.to_string());
+            let _ = proxy.send_event(UserEvent::ModelsLoaded(p, res));
+        });
+    }
+
+    fn open_settings(&mut self) {
+        if self.settings.is_some() {
+            return;
+        }
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let proxy = self.proxy.clone();
+        let send: Box<dyn Fn(SettingsAction)> = Box::new(move |a| {
+            let _ = proxy.send_event(UserEvent::Settings(a));
+        });
+        self.settings = SettingsWindow::open(mtm, send, self.cfg.launch_at_login);
+        self.show_provider(self.cfg.provider);
+    }
+
+    fn on_models_loaded(&mut self, p: Provider, res: Result<Vec<String>, String>) {
+        let Some(w) = &self.settings else { return };
+        if w.form().provider != p {
+            return;
+        }
+        match res {
+            Ok(list) => {
+                if p == Provider::OpenRouter && !list.is_empty() {
+                    config::ModelCache {
+                        fetched: now_secs(),
+                        models: list.clone(),
+                    }
+                    .save();
+                }
+                w.set_models(&list);
+                match (p, list.first()) {
+                    (Provider::LmStudio, Some(first)) => {
+                        w.fill_model_if_empty(first);
+                        w.set_status("");
+                    }
+                    (Provider::LmStudio, None) => {
+                        w.set_status("Aucun modèle chargé dans LM Studio.");
+                    }
+                    _ => {}
+                }
+            }
+            Err(e) => w.set_status(&format!("❌ {e}")),
+        }
+    }
+
+    fn on_settings(&mut self, a: SettingsAction) {
+        match a {
+            SettingsAction::Closed => self.settings = None,
+            SettingsAction::Cancel => {
+                if let Some(w) = self.settings.take() {
+                    w.close();
+                }
+            }
+            SettingsAction::ProviderChanged => {
+                if let Some(w) = &self.settings {
+                    let p = w.form().provider;
+                    self.show_provider(p);
+                }
+            }
+            SettingsAction::DeleteKey => {
+                if let Some(w) = &self.settings {
+                    let p = w.form().provider;
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        let _ = proxy.send_event(UserEvent::KeyDeleted(p, secrets::delete(p)));
+                    });
+                }
+            }
+            SettingsAction::Test => self.test_settings(),
+            SettingsAction::Save => self.save_settings(),
+        }
+    }
+
+    fn test_settings(&self) {
+        let Some(w) = &self.settings else { return };
+        let f = w.form();
+        w.set_status("Test en cours…");
+        let proxy = self.proxy.clone();
+        let base = if f.base_url.is_empty() {
+            llm::DEFAULT_LMSTUDIO_URL.to_string()
+        } else {
+            f.base_url.clone()
+        };
+        std::thread::spawn(move || {
+            let p = f.provider;
+            let out = (|| -> Result<String, String> {
+                let key = match p {
+                    Provider::LmStudio => String::new(),
+                    _ if !f.key.is_empty() => f.key.clone(),
+                    _ => secrets::get(p).ok_or_else(|| LlmError::NoKey.to_string())?,
+                };
+                let model = resolve_model(p, &f.model, &base)?;
+                llm::ask_at(p, &key, &model, "Réponds OK.", "ping", 16, &base)
+                    .map(|_| format!("✅ Connexion OK (modèle {model})"))
+                    .map_err(|e| e.to_string())
+            })();
+            let text = out.unwrap_or_else(|e| format!("❌ {e}"));
+            let _ = proxy.send_event(UserEvent::TestResult(text));
+        });
+    }
+
+    fn save_settings(&mut self) {
+        let Some(w) = self.settings.take() else {
+            return;
+        };
+        let f = w.form();
+        w.close();
+        let p = f.provider;
+        self.cfg.provider = p;
+        if f.model.is_empty() {
+            self.cfg.models.remove(p.id());
+        } else {
+            self.cfg.models.insert(p.id().to_string(), f.model.clone());
+        }
+        if p == Provider::LmStudio {
+            self.cfg.lmstudio_base_url = if f.base_url.is_empty() {
+                llm::DEFAULT_LMSTUDIO_URL.to_string()
+            } else {
+                f.base_url.clone()
+            };
+        }
+        if f.autostart != self.cfg.launch_at_login {
+            match autostart::set_enabled(f.autostart) {
+                Ok(()) => {
+                    self.cfg.launch_at_login = f.autostart;
+                    self.menu.autostart.set_checked(f.autostart);
+                }
+                Err(e) => dialogs::notify(&format!("Lancement au démarrage impossible : {e}")),
+            }
+        }
+        self.cfg.save();
+        self.menu.set_provider(p);
+        if !f.key.is_empty() && p != Provider::LmStudio {
+            let proxy = self.proxy.clone();
+            let key = f.key;
+            std::thread::spawn(move || {
+                let res = secrets::set(p, &key).map(|_| true);
+                let _ = proxy.send_event(UserEvent::KeyEntered(p, res));
+            });
+        }
+        self.refresh_advice_line();
+        dialogs::notify("Réglages enregistrés");
     }
 
     fn on_menu(&mut self, id: &MenuId) -> bool {
@@ -626,36 +869,7 @@ impl App {
                 self.cfg.save();
                 self.refresh_advice_line();
             }
-            Action::SetKey => {
-                let p = self.cfg.provider;
-                let proxy = self.proxy.clone();
-                std::thread::spawn(move || {
-                    let res = match dialogs::ask_text(
-                        &format!("Colle ta clé API {}", p.label()),
-                        "",
-                        true,
-                    ) {
-                        dialogs::DialogResult::Text(k) if !k.trim().is_empty() => {
-                            secrets::set(p, &k).map(|_| true)
-                        }
-                        dialogs::DialogResult::Failed(e) => Err(e),
-                        _ => Ok(false),
-                    };
-                    let _ = proxy.send_event(UserEvent::KeyEntered(p, res));
-                });
-            }
-            Action::SetModel => {
-                let p = self.cfg.provider;
-                let current = self.cfg.model(p);
-                let proxy = self.proxy.clone();
-                std::thread::spawn(move || {
-                    if let dialogs::DialogResult::Text(m) =
-                        dialogs::ask_text(&format!("Modèle {} :", p.label()), &current, false)
-                    {
-                        let _ = proxy.send_event(UserEvent::ModelChosen(p, m));
-                    }
-                });
-            }
+            Action::Settings => self.open_settings(),
             Action::Autostart => {
                 let want = self.menu.autostart.is_checked();
                 match autostart::set_enabled(want) {
@@ -723,7 +937,7 @@ impl App {
         }
         if !self.has_key() {
             show_dialog(format!(
-                "❓ {name} — Inconnu\n\nConfigure une clé IA pour identifier ce processus (Fournisseur IA > Configurer la clé API…)."
+                "❓ {name} — Inconnu\n\nConfigure une clé IA pour identifier ce processus (menu Réglages…)."
             ));
             return;
         }
@@ -745,11 +959,13 @@ impl App {
         let is_security = finding.is_some();
         let sent = vec![info.name.clone()];
         let (provider, model) = (self.cfg.provider, self.cfg.model(self.cfg.provider));
+        let base = self.cfg.lmstudio_base_url.clone();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let result = call_llm(
                 provider,
                 &model,
+                &base,
                 prompt::SYSTEM_PROCESS,
                 &user,
                 prompt::MAX_TOKENS_PROCESS,
@@ -854,15 +1070,36 @@ fn show_dialog(text: String) {
     std::thread::spawn(move || dialogs::show_text(&text));
 }
 
+/// Modèle effectif : celui choisi, ou (LM Studio) le premier modèle du serveur.
+fn resolve_model(p: Provider, model: &str, base: &str) -> Result<String, String> {
+    if !model.is_empty() {
+        return Ok(model.to_string());
+    }
+    if p != Provider::LmStudio {
+        return Ok(p.default_model().to_string());
+    }
+    llm::list_models(p, base)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Aucun modèle chargé dans LM Studio — choisis-en un dans Réglages…".into())
+}
+
 fn call_llm(
     provider: Provider,
     model: &str,
+    base: &str,
     system: &str,
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let key = secrets::get(provider).ok_or_else(|| LlmError::NoKey.to_string())?;
-    llm::ask(provider, &key, model, system, user, max_tokens).map_err(|e| {
+    let key = if provider == Provider::LmStudio {
+        String::new()
+    } else {
+        secrets::get(provider).ok_or_else(|| LlmError::NoKey.to_string())?
+    };
+    let model = resolve_model(provider, model, base)?;
+    llm::ask_at(provider, &key, &model, system, user, max_tokens, base).map_err(|e| {
         eprintln!("llm: {e:?}");
         e.to_string()
     })
@@ -1024,7 +1261,58 @@ fn security_cli() {
     }
 }
 
+/// `--settings-demo` : ouvre seule la fenêtre Réglages quelques secondes (test visuel).
+fn settings_demo(lm: bool) {
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    let mut win: Option<SettingsWindow> = None;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    event_loop.run(move |event, _, cf| {
+        *cf = ControlFlow::WaitUntil(deadline);
+        match event {
+            Event::MainEventsCleared if win.is_none() => {
+                let Some(mtm) = objc2::MainThreadMarker::new() else {
+                    return;
+                };
+                win = SettingsWindow::open(mtm, Box::new(|_| {}), true);
+                eprintln!("demo: fenêtre ouverte = {}", win.is_some());
+                if let Some(w) = &win {
+                    let p = if lm {
+                        Provider::LmStudio
+                    } else {
+                        Provider::OpenRouter
+                    };
+                    let sugg = llm::suggested_models(Provider::OpenRouter);
+                    w.show(&settings::View {
+                        provider: p,
+                        model: "google/gemma-4-31b-it:free",
+                        suggestions: &sugg,
+                        key_exists: !lm,
+                        base_url: llm::DEFAULT_LMSTUDIO_URL,
+                    });
+                    w.set_status("✅ Connexion OK (modèle démo)");
+                    eprintln!(
+                        "demo png: {}",
+                        w.snapshot_png(
+                            &std::env::temp_dir().join("settings.png").to_string_lossy()
+                        )
+                    );
+                }
+            }
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                win = None;
+                *cf = ControlFlow::Exit;
+            }
+            _ => {}
+        }
+    });
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--settings-demo") {
+        settings_demo(std::env::args().any(|a| a == "--lm"));
+        return;
+    }
     if std::env::args().any(|a| a == "--security") {
         security_cli();
         return;

@@ -17,6 +17,13 @@ pub fn get(p: Provider) -> Option<String> {
         .filter(|k| !k.trim().is_empty())
 }
 
+pub fn delete(p: Provider) -> Result<(), String> {
+    match entry(p)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Impossible de supprimer la clé : {e}")),
+    }
+}
+
 pub fn set(p: Provider, key: &str) -> Result<(), String> {
     entry(p)?
         .set_password(key.trim())

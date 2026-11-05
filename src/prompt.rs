@@ -97,7 +97,7 @@ pub struct Reply {
 }
 
 pub const UNREADABLE: &str =
-    "Réponse illisible du modèle — essaie un autre modèle via « Changer le modèle… »";
+    "Réponse illisible du modèle — essaie un autre modèle via « Réglages… »";
 
 fn clean(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '`' | '•' | '#' | '_'))

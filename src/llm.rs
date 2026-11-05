@@ -13,14 +13,19 @@ pub enum Provider {
     OpenAi,
     #[serde(rename = "openrouter")]
     OpenRouter,
+    #[serde(rename = "lmstudio")]
+    LmStudio,
 }
 
+pub const DEFAULT_LMSTUDIO_URL: &str = "http://localhost:1234/v1";
+
 impl Provider {
-    pub const ALL: [Provider; 4] = [
+    pub const ALL: [Provider; 5] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
         Provider::OpenRouter,
+        Provider::LmStudio,
     ];
 
     pub fn id(self) -> &'static str {
@@ -29,6 +34,7 @@ impl Provider {
             Provider::Gemini => "gemini",
             Provider::OpenAi => "openai",
             Provider::OpenRouter => "openrouter",
+            Provider::LmStudio => "lmstudio",
         }
     }
 
@@ -38,6 +44,7 @@ impl Provider {
             Provider::Gemini => "Gemini",
             Provider::OpenAi => "OpenAI (Codex)",
             Provider::OpenRouter => "OpenRouter (gratuit)",
+            Provider::LmStudio => "LM Studio (local)",
         }
     }
 
@@ -47,6 +54,7 @@ impl Provider {
             Provider::Gemini => "gemini-2.5-flash",
             Provider::OpenAi => "gpt-5-mini",
             Provider::OpenRouter => "google/gemma-4-31b-it:free",
+            Provider::LmStudio => "",
         }
     }
 }
@@ -64,6 +72,8 @@ pub enum LlmError {
     Api(u16, String),
     /// Texte vide après nettoyage (modèle de raisonnement épuisé, etc.).
     EmptyModel,
+    /// Serveur local injoignable (LM Studio).
+    LocalDown,
 }
 
 impl fmt::Display for LlmError {
@@ -83,7 +93,11 @@ impl fmt::Display for LlmError {
             LlmError::Api(c, m) => write!(f, "Erreur du service IA ({c}) : {m}"),
             LlmError::EmptyModel => write!(
                 f,
-                "Réponse vide du modèle — essaie un autre modèle via « Changer le modèle… »"
+                "Réponse vide du modèle — essaie un autre modèle via « Réglages… »"
+            ),
+            LlmError::LocalDown => write!(
+                f,
+                "LM Studio ne répond pas — lance le serveur local (onglet Developer) dans LM Studio"
             ),
             LlmError::NoKey => write!(f, "Configure une clé API pour des conseils IA"),
         }
@@ -99,6 +113,7 @@ pub struct Request {
     pub body: Value,
 }
 
+#[cfg(test)]
 pub fn build_request(
     p: Provider,
     key: &str,
@@ -106,6 +121,26 @@ pub fn build_request(
     system: &str,
     user: &str,
     max_tokens: u32,
+) -> Request {
+    build_request_at(
+        p,
+        key,
+        model,
+        system,
+        user,
+        max_tokens,
+        DEFAULT_LMSTUDIO_URL,
+    )
+}
+
+pub fn build_request_at(
+    p: Provider,
+    key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    base_url: &str,
 ) -> Request {
     match p {
         Provider::Anthropic => Request {
@@ -140,6 +175,20 @@ pub fn build_request(
                 }),
             }
         }
+        Provider::LmStudio => Request {
+            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            // Serveur local : aucune authentification.
+            headers: vec![],
+            body: json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                // Gratuit et local : budget large pour les modèles qui raisonnent.
+                "max_tokens": max_tokens * 4,
+            }),
+        },
         Provider::OpenRouter => Request {
             url: "https://openrouter.ai/api/v1/chat/completions".into(),
             headers: vec![
@@ -202,12 +251,12 @@ fn strip_think(s: &str) -> String {
 
 /// Erreur HTTP -> message court ; `body` sert à extraire `error.message`.
 fn http_error(p: Provider, status: u16, body: Option<&Value>) -> LlmError {
-    if p != Provider::OpenRouter {
+    if !matches!(p, Provider::OpenRouter | Provider::LmStudio) {
         return LlmError::Http(status);
     }
     match status {
         401..=403 => LlmError::Http(status),
-        429 => LlmError::FreeLimit,
+        429 if p == Provider::OpenRouter => LlmError::FreeLimit,
         _ => {
             let msg = body
                 .and_then(|b| b.pointer("/error/message"))
@@ -240,12 +289,12 @@ pub fn parse_response(p: Provider, body: &Value) -> Result<String, LlmError> {
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        Provider::OpenRouter => body
+        Provider::OpenRouter | Provider::LmStudio => body
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .map(strip_think),
     };
-    if p == Provider::OpenRouter {
+    if matches!(p, Provider::OpenRouter | Provider::LmStudio) {
         return match text {
             None => Err(LlmError::Parse),
             Some(t) if t.trim().is_empty() => Err(LlmError::EmptyModel),
@@ -259,6 +308,7 @@ pub fn parse_response(p: Provider, body: &Value) -> Result<String, LlmError> {
     }
 }
 
+#[cfg(test)]
 pub fn ask(
     p: Provider,
     key: &str,
@@ -267,9 +317,38 @@ pub fn ask(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, LlmError> {
-    let req = build_request(p, key, model, system, user, max_tokens);
+    ask_at(
+        p,
+        key,
+        model,
+        system,
+        user,
+        max_tokens,
+        DEFAULT_LMSTUDIO_URL,
+    )
+}
+
+fn transport_error(p: Provider, e: ureq::Error) -> LlmError {
+    if p == Provider::LmStudio && !matches!(e, ureq::Error::Timeout(_)) {
+        LlmError::LocalDown
+    } else {
+        LlmError::Network(e.to_string())
+    }
+}
+
+pub fn ask_at(
+    p: Provider,
+    key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    base_url: &str,
+) -> Result<String, LlmError> {
+    let req = build_request_at(p, key, model, system, user, max_tokens, base_url);
+    let secs = if p == Provider::LmStudio { 60 } else { 30 };
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(secs)))
         .http_status_as_error(false)
         .build()
         .into();
@@ -277,9 +356,7 @@ pub fn ask(
     for (k, v) in &req.headers {
         r = r.header(*k, v);
     }
-    let mut resp = r
-        .send_json(&req.body)
-        .map_err(|e| LlmError::Network(e.to_string()))?;
+    let mut resp = r.send_json(&req.body).map_err(|e| transport_error(p, e))?;
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         let body: Option<Value> = resp.body_mut().read_json().ok();
@@ -287,6 +364,61 @@ pub fn ask(
     }
     let json: Value = resp.body_mut().read_json().map_err(|_| LlmError::Parse)?;
     parse_response(p, &json)
+}
+
+/// Suggestions de modèles affichées dans les Réglages (saisie libre possible).
+pub fn suggested_models(p: Provider) -> Vec<String> {
+    let list: &[&str] = match p {
+        Provider::Anthropic => &["claude-haiku-5-5", "claude-sonnet-5-5"],
+        Provider::Gemini => &[
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+        ],
+        Provider::OpenAi => &["gpt-5-mini", "gpt-5-nano", "gpt-5"],
+        Provider::OpenRouter => &["google/gemma-4-31b-it:free"],
+        Provider::LmStudio => &[],
+    };
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+/// Identifiants de modèles d'une réponse `/models` (OpenAI-compatible).
+pub fn parse_model_ids(body: &Value, only_free: bool) -> Vec<String> {
+    let mut ids: Vec<String> = body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m.get("id").and_then(Value::as_str))
+                .filter(|id| !only_free || id.ends_with(":free"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Modèles disponibles : LM Studio (serveur local) ou gratuits d'OpenRouter.
+pub fn list_models(p: Provider, base_url: &str) -> Result<Vec<String>, LlmError> {
+    let (url, free) = match p {
+        Provider::LmStudio => (format!("{}/models", base_url.trim_end_matches('/')), false),
+        Provider::OpenRouter => ("https://openrouter.ai/api/v1/models".to_string(), true),
+        _ => return Ok(Vec::new()),
+    };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut resp = agent.get(&url).call().map_err(|e| transport_error(p, e))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(LlmError::Http(status));
+    }
+    let json: Value = resp.body_mut().read_json().map_err(|_| LlmError::Parse)?;
+    Ok(parse_model_ids(&json, free))
 }
 
 #[cfg(test)]
@@ -374,7 +506,58 @@ mod tests {
         assert_eq!(parse(p, empty), Err(LlmError::Parse));
         let blank = r#"{"choices":[{"message":{"content":" "}}]}"#;
         let e = parse(p, blank).unwrap_err();
-        assert!(e.to_string().contains("Changer le modèle"));
+        assert!(e.to_string().contains("Réglages"));
+    }
+
+    #[test]
+    fn lmstudio_request_has_no_auth_and_uses_base_url() {
+        let r = build_request_at(
+            Provider::LmStudio,
+            "ignored",
+            "qwen3-4b",
+            "sys",
+            "usr",
+            200,
+            "http://localhost:1234/v1/",
+        );
+        assert_eq!(r.url, "http://localhost:1234/v1/chat/completions");
+        assert!(r.headers.is_empty());
+        assert_eq!(r.body["model"], "qwen3-4b");
+        assert_eq!(r.body["max_tokens"], 800);
+        assert!(r.body.get("reasoning").is_none());
+        assert!(!r.body.to_string().contains("ignored"));
+    }
+
+    #[test]
+    fn lmstudio_errors_and_think_stripping() {
+        let p = Provider::LmStudio;
+        let t = r#"{"choices":[{"message":{"content":"<think>hmm</think>Ok."}}]}"#;
+        assert_eq!(parse(p, t).unwrap(), "Ok.");
+        assert!(LlmError::LocalDown.to_string().contains("onglet Developer"));
+        let body: Value =
+            serde_json::from_str(r#"{"error":{"message":"No model loaded"}}"#).unwrap();
+        assert!(
+            http_error(p, 400, Some(&body))
+                .to_string()
+                .contains("No model loaded")
+        );
+        assert_eq!(http_error(p, 429, None), LlmError::Http(429));
+        assert_eq!(Provider::LmStudio.id(), "lmstudio");
+        assert_eq!(Provider::ALL.len(), 5);
+    }
+
+    #[test]
+    fn parses_model_lists() {
+        let j: Value = serde_json::from_str(
+            r#"{"data":[{"id":"b/model:free"},{"id":"a/paid"},{"id":"a/other:free"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_model_ids(&j, true),
+            vec!["a/other:free", "b/model:free"]
+        );
+        assert_eq!(parse_model_ids(&j, false).len(), 3);
+        assert!(parse_model_ids(&Value::Null, false).is_empty());
     }
 
     #[test]

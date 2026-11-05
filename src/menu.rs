@@ -5,7 +5,10 @@ use crate::llm::Provider;
 use crate::metrics::{ProcTop, Snapshot, fmt_go, fmt_mem};
 use crate::security::Finding;
 use std::cell::RefCell;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{
+    CheckMenuItem, Icon as MenuIcon, IconMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem,
+    Submenu,
+};
 
 pub const PROC_SLOTS: usize = 5;
 const SEC_SLOTS: usize = 5;
@@ -19,8 +22,7 @@ pub enum Action {
     FullAdvice,
     Analyze,
     Provider(Provider),
-    SetKey,
-    SetModel,
+    Settings,
     Autostart,
     Quit,
 }
@@ -54,12 +56,46 @@ struct SecSlot {
     kill: MenuItem,
 }
 
+/// Ligne d'information avec mini-courbe en icône.
+struct ChartLine {
+    item: IconMenuItem,
+    last: RefCell<String>,
+}
+
+impl ChartLine {
+    fn new(text: &str) -> Self {
+        Self {
+            item: IconMenuItem::new(text, false, None, None),
+            last: RefCell::new(String::new()),
+        }
+    }
+
+    fn set(&self, text: String) {
+        if *self.last.borrow() != text {
+            self.item.set_text(&text);
+            *self.last.borrow_mut() = text;
+        }
+    }
+
+    fn set_chart(&self, values: &[f32], lo: f32, hi: f32) {
+        if values.is_empty() {
+            self.item.set_icon(None);
+        } else if let Ok(icon) = MenuIcon::from_rgba(
+            crate::chart::render(values, lo, hi),
+            crate::chart::W,
+            crate::chart::H,
+        ) {
+            self.item.set_icon(Some(icon));
+        }
+    }
+}
+
 pub struct AppMenu {
     pub menu: Menu,
-    cpu: Line,
-    mem: Line,
+    cpu: ChartLine,
+    mem: ChartLine,
     disk: Line,
-    temp: Line,
+    temp: ChartLine,
     procs: Vec<Line>,
     advice: Line,
     full: MenuItem,
@@ -69,8 +105,7 @@ pub struct AppMenu {
     sec_status: Line,
     sec_slots: Vec<SecSlot>,
     providers: Vec<(Provider, CheckMenuItem)>,
-    set_key: MenuItem,
-    set_model: MenuItem,
+    settings: MenuItem,
     pub autostart: CheckMenuItem,
     quit: MenuItem,
 }
@@ -82,10 +117,10 @@ fn info(text: &str) -> MenuItem {
 impl AppMenu {
     pub fn build(provider: Provider, autostart: bool) -> Result<Self, tray_icon::menu::Error> {
         let menu = Menu::new();
-        let cpu = Line::new(info("CPU : …"));
-        let mem = Line::new(info("Mémoire : …"));
+        let cpu = ChartLine::new("CPU : …");
+        let mem = ChartLine::new("Mémoire : …");
         let disk = Line::new(info("Disque : …"));
-        let temp = Line::new(info("Température : …"));
+        let temp = ChartLine::new("Température : …");
 
         let procs_sub = Submenu::new("Processus les plus gourmands", true);
         let procs: Vec<Line> = (0..PROC_SLOTS).map(|_| Line::new(info("—"))).collect();
@@ -126,12 +161,8 @@ impl AppMenu {
         for (_, item) in &providers {
             prov_sub.append(item)?;
         }
-        prov_sub.append(&PredefinedMenuItem::separator())?;
-        let set_key = MenuItem::new("Configurer la clé API…", true, None);
-        let set_model = MenuItem::new("Changer le modèle…", true, None);
-        prov_sub.append(&set_key)?;
-        prov_sub.append(&set_model)?;
 
+        let settings = MenuItem::new("Réglages…", true, None);
         let autostart = CheckMenuItem::new("Lancer au démarrage", true, autostart, None);
         let quit = MenuItem::new("Quitter", true, None);
 
@@ -150,6 +181,7 @@ impl AppMenu {
         menu.append(&sec_root)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&prov_sub)?;
+        menu.append(&settings)?;
         menu.append(&autostart)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit)?;
@@ -169,8 +201,7 @@ impl AppMenu {
             sec_status,
             sec_slots,
             providers,
-            set_key,
-            set_model,
+            settings,
             autostart,
             quit,
         })
@@ -193,8 +224,7 @@ impl AppMenu {
             (self.show_prompt.id(), Action::ShowPrompt),
             (self.full.id(), Action::FullAdvice),
             (self.analyze.id(), Action::Analyze),
-            (self.set_key.id(), Action::SetKey),
-            (self.set_model.id(), Action::SetModel),
+            (self.settings.id(), Action::Settings),
             (self.autostart.id(), Action::Autostart),
             (self.quit.id(), Action::Quit),
         ];
@@ -244,6 +274,13 @@ impl AppMenu {
                 }
             }
         }
+    }
+
+    /// Mini-courbes de la dernière heure (appelé une fois par minute).
+    pub fn update_charts(&self, h: &crate::history::History) {
+        self.cpu.set_chart(&h.cpu.values(), 0.0, 100.0);
+        self.mem.set_chart(&h.mem.values(), 0.0, 100.0);
+        self.temp.set_chart(&h.temp.values(), 20.0, 100.0);
     }
 
     pub fn update_security(&self, findings: &[Finding]) {

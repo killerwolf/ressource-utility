@@ -17,6 +17,7 @@ pub struct Config {
     pub gate: Gate,
     /// Exécutables suspects déjà signalés (une seule notification chacun).
     pub notified_suspects: Vec<String>,
+    pub lmstudio_base_url: String,
 }
 
 impl Default for Config {
@@ -28,6 +29,7 @@ impl Default for Config {
             launch_at_login: false,
             gate: Gate::default(),
             notified_suspects: Vec::new(),
+            lmstudio_base_url: crate::llm::DEFAULT_LMSTUDIO_URL.to_string(),
         }
     }
 }
@@ -99,6 +101,27 @@ impl Explanations {
     }
 }
 
+/// Liste des modèles gratuits d'OpenRouter, valable 24 h.
+#[derive(Default, Serialize, Deserialize)]
+pub struct ModelCache {
+    pub fetched: u64,
+    pub models: Vec<String>,
+}
+
+impl ModelCache {
+    pub fn load() -> Self {
+        load_json("openrouter_models.json")
+    }
+
+    pub fn save(&self) {
+        save_json("openrouter_models.json", self);
+    }
+
+    pub fn fresh(&self, now: u64) -> bool {
+        !self.models.is_empty() && now.saturating_sub(self.fetched) < 24 * 3600
+    }
+}
+
 fn dir() -> Option<PathBuf> {
     let d = dirs::config_dir()?.join("ressource-utility");
     std::fs::create_dir_all(&d).ok()?;
@@ -157,6 +180,27 @@ mod tests {
         assert_eq!(c.model(Provider::Gemini), "gemini-2.5-pro");
         let c2: Config = serde_json::from_str(r#"{"provider":"openrouter"}"#).unwrap();
         assert_eq!(c2.provider, Provider::OpenRouter);
+    }
+
+    #[test]
+    fn model_cache_expires_after_a_day() {
+        let c = ModelCache {
+            fetched: 1000,
+            models: vec!["a:free".into()],
+        };
+        assert!(c.fresh(1000 + 3600));
+        assert!(!c.fresh(1000 + 25 * 3600));
+        assert!(!ModelCache::default().fresh(0));
+    }
+
+    #[test]
+    fn old_config_gets_lmstudio_defaults() {
+        let c: Config =
+            serde_json::from_str(r#"{"provider":"anthropic","launch_at_login":false}"#).unwrap();
+        assert_eq!(c.lmstudio_base_url, "http://localhost:1234/v1");
+        assert_eq!(c.model(Provider::LmStudio), "");
+        let c2: Config = serde_json::from_str(r#"{"provider":"lmstudio"}"#).unwrap();
+        assert_eq!(c2.provider, Provider::LmStudio);
     }
 
     #[test]
