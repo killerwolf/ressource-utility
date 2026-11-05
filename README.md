@@ -1,6 +1,55 @@
-# Ressource Utility
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/assets/icon.png" alt="" width="96" height="96" /><br />
+  Ressource Utility
+</h1>
 
-Utilitaire léger en Rust pour la barre des menus macOS qui surveille CPU, mémoire, disque et température et donne des conseils via IA.
+<p align="center">
+  Utilitaire léger en Rust pour la barre des menus macOS : CPU, mémoire, disque et température, avec un verdict clair sur chaque processus et des conseils par IA au choix (y compris 100 % locale).
+</p>
+
+<p align="center">
+  <a href="https://github.com/killerwolf/ressource-utility/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/killerwolf/ressource-utility/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/killerwolf/ressource-utility/releases/latest"><img alt="Dernière release" src="https://img.shields.io/github/v/release/killerwolf/ressource-utility" /></a>
+  <a href="LICENSE"><img alt="Licence MIT" src="https://img.shields.io/github/license/killerwolf/ressource-utility" /></a>
+  <img alt="macOS 12+" src="https://img.shields.io/badge/macOS-12%2B-lightgrey" />
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/killerwolf/ressource-utility/main/.github/assets/settings.png" alt="Fenêtre Réglages : fournisseur, modèle, clé API dans le Trousseau, lancement au démarrage, boutons Tester, Annuler et Enregistrer." width="440" />
+</p>
+
+<p align="center">
+  <a href="https://h4md1.fr/ressource-utility/">Site</a> ·
+  <a href="https://github.com/killerwolf/ressource-utility/releases/latest">Télécharger</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+Le texte du bilan, tel que l'application l'écrit (sortie réelle, sans clé IA configurée) :
+
+```text
+État du Mac
+⚠️ Disque presque plein : 8,9 Go libres (4 %)
+✅ CPU 14 % · Mémoire 61 % · 48 °C — normal
+
+Sécurité
+✅ Aucun logiciel suspect détecté
+
+Ce qui tourne
+✅ mdworker_shared ×16 — Normal
+   Spotlight (la recherche) indexe tes fichiers. Temporaire, ça se calme tout seul.
+❓ WhatsApp — Inconnu
+   Inconnu — configure une clé IA pour l'identifier.
+👀 Google Chrome Helper ×33 — À surveiller
+   Un onglet ou une extension de Google Chrome. Normal, mais beaucoup de RAM = trop d'onglets ouverts. Il utilise 2,9 Go de RAM : ferme ce qui ne sert pas.
+
+👉 Conseil : Libère de l'espace disque (Réglages > Général > Stockage).
+```
+
+## Est-ce le bon outil ?
+
+**Oui, si** vous voulez comprendre en une phrase pourquoi votre Mac chauffe ou ralentit, et repérer un processus inhabituel sans ouvrir le Moniteur d'activité.
+
+**Non, si** vous cherchez un antivirus complet ou un outil multiplateforme : les contrôles de sécurité sont des heuristiques locales (noms de mineurs connus, emplacements, signature, démarrage automatique) et l'application ne fonctionne que sur macOS.
 
 ## Fonctionnalités
 

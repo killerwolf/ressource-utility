@@ -196,7 +196,7 @@ pub fn build_request_at(
                 ("X-Title", "Ressource Utility".into()),
                 (
                     "HTTP-Referer",
-                    "https://github.com/ressource-utility".into(),
+                    "https://github.com/killerwolf/ressource-utility".into(),
                 ),
             ],
             body: json!({
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(h("X-Title"), Some("Ressource Utility"));
         assert_eq!(
             h("HTTP-Referer"),
-            Some("https://github.com/ressource-utility")
+            Some("https://github.com/killerwolf/ressource-utility")
         );
         assert_eq!(r.body["max_tokens"], 400);
         assert_eq!(r.body["reasoning"]["effort"], "low");

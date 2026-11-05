@@ -202,7 +202,8 @@ impl Sampler {
             .refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind());
         let mut map: HashMap<String, (ProcInfo, f32)> = HashMap::new();
         for (pid, p) in self.sys.processes() {
-            let name = p.name().to_string_lossy().into_owned();
+            // Regroupe « Foo Helper (Renderer) » et « Foo Helper (GPU) » sous « Foo Helper ».
+            let name = crate::known::strip_decor(&p.name().to_string_lossy()).to_string();
             let (e, best) = map.entry(name.clone()).or_insert((
                 ProcInfo {
                     name,

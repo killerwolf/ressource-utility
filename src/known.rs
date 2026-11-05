@@ -198,6 +198,18 @@ const SYS: &[(&str, &str)] = &[
         "triald",
         "Service Apple de tests et d'expériences. Sans danger.",
     ),
+    (
+        "biomeagent",
+        "Service Apple qui alimente les suggestions de Siri et de Spotlight. Normal.",
+    ),
+    (
+        "spotlightknowledged",
+        "Service Apple de Spotlight (suggestions et recherche). Normal.",
+    ),
+    (
+        "spotlightknowledged.updater",
+        "Met à jour les connaissances de Spotlight. Normal et temporaire.",
+    ),
     ("usernoted", "Affiche les notifications."),
     ("notificationcenter", "Le centre de notifications."),
     (

@@ -1290,7 +1290,7 @@ fn settings_demo(lm: bool) {
                         key_exists: !lm,
                         base_url: llm::DEFAULT_LMSTUDIO_URL,
                     });
-                    w.set_status("✅ Connexion OK (modèle démo)");
+                    w.set_status("✅ Connexion OK (modèle google/gemma-4-31b-it:free)");
                     eprintln!(
                         "demo png: {}",
                         w.snapshot_png(

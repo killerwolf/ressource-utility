@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ressource Utility — savoir si ce qui tourne sur votre Mac est normal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Moniteur de ressources pour la barre des menus macOS : CPU, mémoire, disque et température, avec un verdict clair par processus, une détection locale des logiciels suspects et une IA au choix, y compris 100 % locale." />
+    <link rel="canonical" href="https://h4md1.fr/ressource-utility/" />
+
+    <link rel="icon" type="image/png" sizes="256x256" href="icon-256.png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f1230" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Ressource Utility" />
+    <meta property="og:title" content="Ressource Utility — savoir si ce qui tourne sur votre Mac est normal" />
+    <meta property="og:description" content="Dans la barre des menus : CPU, mémoire, disque, température, et un verdict clair sur chaque processus. Open source, pour macOS." />
+    <meta property="og:url" content="https://h4md1.fr/ressource-utility/" />
+    <meta property="og:image" content="https://h4md1.fr/ressource-utility/social-preview.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:alt" content="Ressource Utility : l'icône de l'application, trois barres colorées, et le slogan de l'application." />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Ressource Utility — savoir si ce qui tourne sur votre Mac est normal" />
+    <meta name="twitter:description" content="Dans la barre des menus : CPU, mémoire, disque, température, et un verdict clair sur chaque processus. Open source, pour macOS." />
+    <meta name="twitter:image" content="https://h4md1.fr/ressource-utility/social-preview.png" />
+
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff; --bg-alt: #f3f5fb; --fg: #12142a; --fg-mut: #555b73;
+        --line: #dfe3f0; --accent: #2563eb; --accent-fg: #ffffff;
+        --card: #ffffff; --code: #0f1230; --code-fg: #e8eaf6;
+        --ok: #15803d; --warn: #b45309; --radius: 14px; --wrap: 980px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0d22; --bg-alt: #11142f; --fg: #eceefb; --fg-mut: #a4a9c4;
+          --line: #232850; --accent: #7dd3fc; --accent-fg: #0b0d22;
+          --card: #11142f; --code: #070918; --code-fg: #e8eaf6;
+          --ok: #4ade80; --warn: #fbbf24;
+        }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg);
+        font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased; }
+      .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 22px; }
+      a { color: var(--accent); text-underline-offset: 2px; }
+      .skip { position: absolute; left: -9999px; background: var(--accent); color: var(--accent-fg); padding: 10px 16px; }
+      .skip:focus { left: 0; top: 0; }
+
+      .hero { background: radial-gradient(900px 400px at 80% -10%, rgba(56,189,248,.25), transparent 60%), linear-gradient(180deg, #1b1f55, #0f1230);
+        color: #f2f4ff; padding: 56px 0 72px; text-align: center; }
+      .hero img.app-icon { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+      h1 { margin: 22px auto 0; max-width: 20ch; font-size: clamp(2rem, 5.4vw, 3.3rem); line-height: 1.08; letter-spacing: -0.03em; }
+      .lede { margin: 18px auto 0; max-width: 58ch; font-size: 1.12rem; color: #c3c8e6; }
+      .lede strong { color: #fff; }
+      .cta { margin-top: 28px; }
+      .btn { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; text-decoration: none;
+        background: #7dd3fc; color: #0b0d22; font-weight: 700; padding: 14px 30px; border-radius: var(--radius); }
+      .btn small { font-weight: 500; font-size: .78rem; opacity: .8; }
+      .btn:hover { filter: brightness(1.06); }
+      .hero .alt { margin-top: 14px; font-size: .9rem; color: #aab0d6; }
+      .hero .alt a { color: #cfe9ff; }
+
+      .section { padding: 64px 0 0; }
+      h2 { margin: 0; font-size: clamp(1.4rem, 3.2vw, 1.95rem); letter-spacing: -0.02em; }
+      .sub { margin: 10px 0 0; color: var(--fg-mut); max-width: 66ch; }
+      .showcase { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 26px; align-items: start; margin-top: 30px; }
+      @media (max-width: 820px) { .showcase { grid-template-columns: 1fr; } }
+      pre.report { margin: 0; padding: 20px 22px; background: var(--code); color: var(--code-fg); border-radius: var(--radius);
+        font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); }
+      figure { margin: 0; }
+      figcaption { margin-top: 10px; font-size: .85rem; color: var(--fg-mut); }
+      .shot { border-radius: var(--radius); border: 1px solid var(--line); box-shadow: 0 14px 34px rgba(10,12,40,.18); display: block; width: 100%; height: auto; }
+
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; margin-top: 28px; }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; }
+      .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+      .card p { margin: 0; color: var(--fg-mut); font-size: .96rem; }
+      .tag { display: inline-block; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+        background: var(--bg-alt); border: 1px solid var(--line); color: var(--fg-mut); margin-bottom: 8px; }
+
+      .alt-bg { background: var(--bg-alt); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 56px 0; margin-top: 64px; }
+      ul.privacy { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 12px; }
+      ul.privacy li { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: 10px; padding: 12px 16px; }
+      .gotcha { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 10px; padding: 18px 22px; margin-top: 26px; }
+      .gotcha h3 { margin: 0 0 6px; }
+      .pill { font: .86em ui-monospace, Menlo, monospace; background: var(--bg-alt); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+      .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+      @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+      footer { padding: 40px 0 60px; color: var(--fg-mut); font-size: .9rem; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#telecharger">Aller au téléchargement</a>
+
+    <header class="hero">
+      <div class="wrap">
+        <img class="app-icon" src="icon-256.png" alt="" width="96" height="96" />
+        <h1>Sachez si ce qui tourne sur votre Mac est normal.</h1>
+        <p class="lede">
+          Dans la barre des menus&nbsp;: <strong>CPU, mémoire, disque et température</strong>,
+          et un verdict simple pour chaque processus — normal, à surveiller, anormal ou inconnu.
+        </p>
+        <div class="cta">
+          <a class="btn" id="telecharger" href="https://github.com/killerwolf/ressource-utility/releases/latest">
+            Télécharger pour macOS
+            <small>Apple Silicon &amp; Intel · macOS 12 ou plus</small>
+          </a>
+          <p class="alt">Gratuit, open source (MIT) · <a href="https://github.com/killerwolf/ressource-utility">Code sur GitHub</a></p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="section">
+        <div class="wrap">
+          <h2>Un bilan en français, pas un mur de chiffres</h2>
+          <p class="sub">
+            « <em>avconferenced</em>, c'est quoi ? » L'application répond avec une phrase simple et un verdict.
+            Les processus macOS courants, les aides des navigateurs et des applications Electron sont reconnus
+            localement, sans aucun appel à une IA.
+          </p>
+          <div class="showcase">
+            <figure>
+              <pre class="report" aria-label="Exemple de bilan">État du Mac
+⚠️ Disque presque plein : 8,9 Go libres (4 %)
+✅ CPU 14 % · Mémoire 61 % · 48 °C — normal
+
+Sécurité
+✅ Aucun logiciel suspect détecté
+
+Ce qui tourne
+✅ Claude Helper ×13 — Normal
+   Partie de l&#x27;application Claude (processus de fond). Normal.
+✅ ressource-utility ×2 — Normal
+   Cette application, qui surveille ton Mac. Elle est très légère.
+✅ claude ×4 — Normal
+   L&#x27;application Claude.
+✅ mdworker_shared ×16 — Normal
+   Spotlight (la recherche) indexe tes fichiers. Temporaire, ça se calme tout seul.
+❓ WhatsApp — Inconnu
+   Inconnu — configure une clé IA pour l&#x27;identifier.
+👀 Google Chrome Helper ×33 — À surveiller
+   Un onglet ou une extension de Google Chrome. Normal, mais beaucoup de RAM = trop d&#x27;onglets ouverts. Il utilise 2,9 Go de RAM : ferme ce qui ne sert pas.
+✅ Brave Browser Helper ×13 — Normal
+   Un onglet ou une extension de Brave Browser. Normal, mais beaucoup de RAM = trop d&#x27;onglets ouverts.
+✅ Google Chrome — Normal
+   Le navigateur Google Chrome.
+
+👉 Conseil : Libère de l&#x27;espace disque (Réglages &gt; Général &gt; Stockage).</pre>
+              <figcaption>Le texte du bilan, tel que l'application l'écrit (sortie réelle sur un Mac, sans clé IA configurée : les processus qu'elle ne connaît pas restent « Inconnu »).</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="settings.png" width="440" height="330"
+                alt="Fenêtre Réglages : fournisseur OpenRouter (gratuit), modèle, clé API enregistrée dans le Trousseau, lancement au démarrage et boutons Tester, Annuler, Enregistrer." />
+              <figcaption>La fenêtre <strong>Réglages</strong> : fournisseur, modèle, clé API (dans le Trousseau macOS) et bouton <em>Tester</em>.</figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Ce que ça fait</h2>
+          <div class="grid">
+            <div class="card"><span class="tag">Local</span><h3>Un verdict par processus</h3>
+              <p>✅ normal, 👀 à surveiller, 🛑 anormal, ❓ inconnu — dans le menu et dans « Voir le bilan ». Un processus connu qui pèse lourd passe en « à surveiller ».</p></div>
+            <div class="card"><span class="tag">Local</span><h3>Mineurs et logiciels suspects</h3>
+              <p>Noms de mineurs de cryptomonnaie connus, noms système usurpés, emplacements douteux, signature de code, éléments de démarrage automatique. Afficher dans le Finder ou forcer à quitter, avec confirmation.</p></div>
+            <div class="card"><span class="tag">Menu</span><h3>Mini-courbes d'une heure</h3>
+              <p>CPU, mémoire et température, un point par minute, gardés en mémoire seulement.</p></div>
+            <div class="card"><span class="tag">IA au choix</span><h3>Anthropic, Gemini, OpenAI, OpenRouter, LM Studio</h3>
+              <p>OpenRouter propose un modèle gratuit. Avec LM Studio, tout reste sur votre Mac : rien ne sort sur Internet.</p></div>
+            <div class="card"><span class="tag">Économe</span><h3>Très peu de jetons</h3>
+              <p>Aucun appel périodique. L'IA ne juge que les processus inconnus, au plus un appel automatique toutes les 30&nbsp;minutes, réponse limitée à 200&nbsp;jetons, verdicts mis en cache.</p></div>
+            <div class="card"><span class="tag">Léger</span><h3>Environ 0,6&nbsp;% de CPU</h3>
+              <p>Mesuré au repos. Écrit en Rust, binaire de 1,9&nbsp;Mo, sans icône dans le Dock.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="alt-bg">
+        <div class="wrap">
+          <h2>Ce qui est envoyé à l'IA</h2>
+          <ul class="privacy">
+            <li><strong>Rien sans clé</strong>, et rien quand tous les processus sont connus. Le menu « Voir ce qui sera envoyé à l'IA » affiche le texte exact.</li>
+            <li><strong>Une ligne de métriques</strong> (CPU, RAM, disque, température), les alertes actives et, pour les seuls processus inconnus, <span class="pill">nom CPU % mémoire</span>.</li>
+            <li><strong>Un processus jugé suspect</strong> : en plus ses signaux, l'état de sa signature et son chemin, dossier personnel remplacé par <span class="pill">~</span>. Jamais de chemin pour un processus normal.</li>
+            <li><strong>Jamais</strong> : vos clés (stockées dans le Trousseau macOS), le contenu de vos fichiers, votre nom d'utilisateur, votre historique.</li>
+            <li><strong>Avec LM Studio</strong>, rien n'est envoyé sur Internet.</li>
+          </ul>
+        </div>
+      </div>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Installer</h2>
+          <ol>
+            <li>Téléchargez le zip depuis la <a href="https://github.com/killerwolf/ressource-utility/releases/latest">dernière release</a>.</li>
+            <li>Décompressez-le et déplacez <span class="pill">Ressource Utility.app</span> dans <span class="pill">~/Applications</span>.</li>
+            <li>Lancez-le : l'icône apparaît dans la barre des menus. <strong>Réglages…</strong> permet de choisir le fournisseur d'IA (facultatif).</li>
+          </ol>
+          <div class="gotcha">
+            <h3>Premier lancement : macOS demande confirmation</h3>
+            <p>L'application est signée en « ad hoc » (pas de certificat Apple Developer payant) : au premier lancement, faites un <strong>clic droit sur l'application puis Ouvrir</strong>, et confirmez.</p>
+          </div>
+          <div class="two">
+            <div class="card"><h3>Pour vous si…</h3><p>vous voulez comprendre en une phrase pourquoi le ventilateur tourne, ou repérer un processus inhabituel, sans ouvrir le Moniteur d'activité.</p></div>
+            <div class="card"><h3>Pas pour vous si…</h3><p>vous cherchez un antivirus complet : les contrôles de sécurité sont des heuristiques locales, pas une analyse de malwares. Seulement macOS.</p></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <a href="https://github.com/killerwolf/ressource-utility">GitHub</a> ·
+        <a href="https://github.com/killerwolf/ressource-utility/blob/main/CHANGELOG.md">Changelog</a> ·
+        <a href="https://github.com/killerwolf/ressource-utility/blob/main/LICENSE">Licence MIT</a>
+        <p>© 2026 Hamdi LAADHARI</p>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -37,6 +37,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$BIN"
 sed "s/@VERSION@/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
+cp macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --deep -s - "$APP"
 

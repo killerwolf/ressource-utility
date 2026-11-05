@@ -8,6 +8,8 @@
     <string>Ressource Utility</string>
     <key>CFBundleDisplayName</key>
     <string>Ressource Utility</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleExecutable</key>
     <string>ressource-utility</string>
     <key>CFBundlePackageType</key>
