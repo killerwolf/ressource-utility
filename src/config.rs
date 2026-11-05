@@ -1,6 +1,7 @@
 //! Configuration (non secrète) et cache d'explications, en JSON.
 
 use crate::anomaly::{Gate, Thresholds};
+use crate::known::{self, Verdict};
 use crate::llm::Provider;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
@@ -38,7 +39,17 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        load_json("config.json")
+        let mut c: Self = load_json("config.json");
+        c.migrate();
+        c
+    }
+
+    /// `openrouter/free` pouvait renvoyer des modèles de raisonnement :
+    /// on repasse sur le modèle par défaut actuel.
+    fn migrate(&mut self) {
+        if self.models.get("openrouter").map(String::as_str) == Some("openrouter/free") {
+            self.models.remove("openrouter");
+        }
     }
 
     pub fn save(&self) {
@@ -46,21 +57,41 @@ impl Config {
     }
 }
 
-/// Explications de processus, mises en cache à vie par nom.
-#[derive(Default, Serialize, Deserialize)]
-pub struct Explanations(pub HashMap<String, String>);
+/// Verdict mis en cache pour un processus (jamais redemandé au LLM).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CachedVerdict {
+    pub verdict: Verdict,
+    pub text: String,
+}
+
+/// Verdicts de processus mis en cache à vie par nom (sans décoration).
+#[derive(Default, Serialize)]
+pub struct Explanations(pub HashMap<String, CachedVerdict>);
 
 impl Explanations {
     pub fn load() -> Self {
-        load_json("explanations.json")
+        let raw: HashMap<String, serde_json::Value> = load_json("explanations.json");
+        Self::from_raw(raw)
     }
 
-    pub fn get(&self, name: &str) -> Option<&String> {
-        self.0.get(&name.to_lowercase())
+    /// Les anciennes entrées en texte brut (v0.1) sont abandonnées.
+    fn from_raw(raw: HashMap<String, serde_json::Value>) -> Self {
+        Self(
+            raw.into_iter()
+                .filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?)))
+                .collect(),
+        )
     }
 
-    pub fn insert(&mut self, name: &str, text: String) {
-        self.0.insert(name.to_lowercase(), text);
+    pub fn get(&self, name: &str) -> Option<&CachedVerdict> {
+        self.0.get(&known::normalize(name))
+    }
+
+    pub fn insert_many(&mut self, items: impl IntoIterator<Item = (String, Verdict, String)>) {
+        for (name, verdict, text) in items {
+            self.0
+                .insert(known::normalize(&name), CachedVerdict { verdict, text });
+        }
         save_json("explanations.json", self);
     }
 }
@@ -119,9 +150,34 @@ mod tests {
             "gate":{"global_secs":1800,"signature_secs":7200,"last_auto":5,"signatures":{}}}"#;
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.provider, Provider::Gemini);
-        assert_eq!(c.model(Provider::OpenRouter), "openrouter/free");
+        assert_eq!(c.model(Provider::OpenRouter), "google/gemma-4-31b-it:free");
         assert_eq!(c.model(Provider::Gemini), "gemini-2.5-pro");
         let c2: Config = serde_json::from_str(r#"{"provider":"openrouter"}"#).unwrap();
         assert_eq!(c2.provider, Provider::OpenRouter);
+    }
+
+    #[test]
+    fn old_openrouter_model_is_migrated() {
+        let mut c: Config =
+            serde_json::from_str(r#"{"models":{"openrouter":"openrouter/free","gemini":"x"}}"#)
+                .unwrap();
+        c.migrate();
+        assert_eq!(c.model(Provider::OpenRouter), "google/gemma-4-31b-it:free");
+        assert_eq!(c.model(Provider::Gemini), "x");
+        let mut c: Config =
+            serde_json::from_str(r#"{"models":{"openrouter":"meta/other:free"}}"#).unwrap();
+        c.migrate();
+        assert_eq!(c.model(Provider::OpenRouter), "meta/other:free");
+    }
+
+    #[test]
+    fn old_plain_text_cache_entries_are_dropped() {
+        let raw: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"old":"du texte brut","new":{"verdict":"watch","text":"ok"}}"#,
+        )
+        .unwrap();
+        let e = Explanations::from_raw(raw);
+        assert!(e.get("old").is_none());
+        assert_eq!(e.get("New ×3").unwrap().verdict, Verdict::Watch);
     }
 }

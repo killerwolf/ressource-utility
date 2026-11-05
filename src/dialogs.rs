@@ -69,7 +69,7 @@ pub fn ask_text(prompt: &str, default: &str, hidden: bool) -> DialogResult {
 /// Affiche un texte dans une boîte de dialogue (bloquant).
 pub fn show_text(text: &str) {
     let script = format!(
-        "display dialog \"{}\" buttons {{\"OK\"}} default button \"OK\" with title \"{TITLE}\"",
+        "display dialog \"{}\" buttons {{\"OK\"}} default button \"OK\" with title \"{TITLE} — Bilan\"",
         escape(text)
     );
     let _ = run(&script);

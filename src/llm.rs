@@ -46,7 +46,7 @@ impl Provider {
             Provider::Anthropic => "claude-haiku-5-5",
             Provider::Gemini => "gemini-2.5-flash",
             Provider::OpenAi => "gpt-5-mini",
-            Provider::OpenRouter => "openrouter/free",
+            Provider::OpenRouter => "google/gemma-4-31b-it:free",
         }
     }
 }
@@ -158,7 +158,7 @@ pub fn build_request(
                 ],
                 // Les modèles gratuits sont souvent des modèles de raisonnement :
                 // budget de sortie élargi, raisonnement court et masqué.
-                "max_tokens": max_tokens * 4,
+                "max_tokens": max_tokens * 2,
                 "reasoning": {"effort": "low", "exclude": true},
             }),
         },
@@ -382,7 +382,7 @@ mod tests {
         let r = build_request(
             Provider::OpenRouter,
             "k",
-            "openrouter/free",
+            "google/gemma-4-31b-it:free",
             "sys",
             "usr",
             200,
@@ -400,7 +400,7 @@ mod tests {
             h("HTTP-Referer"),
             Some("https://github.com/ressource-utility")
         );
-        assert_eq!(r.body["max_tokens"], 800);
+        assert_eq!(r.body["max_tokens"], 400);
         assert_eq!(r.body["reasoning"]["effort"], "low");
         assert_eq!(r.body["reasoning"]["exclude"], true);
         assert!(r.body.get("reasoning_effort").is_none());
@@ -442,7 +442,7 @@ mod tests {
         let e = ask(
             Provider::OpenRouter,
             "sk-or-invalid",
-            "openrouter/free",
+            "google/gemma-4-31b-it:free",
             "s",
             "u",
             20,

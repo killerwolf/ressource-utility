@@ -5,14 +5,17 @@ mod autostart;
 mod config;
 mod dialogs;
 mod icon;
+mod known;
 mod llm;
 mod menu;
 mod metrics;
 mod prompt;
+mod report;
 mod secrets;
 
 use anomaly::{Anomaly, Detector, Sample};
 use config::{Config, Explanations};
+use known::Verdict;
 use llm::{LlmError, Provider};
 use menu::{Action, AppMenu, one_line};
 use metrics::{ProcTop, Refresh, Sampler, Snapshot, fmt_go};
@@ -32,13 +35,13 @@ const NOTIFY_DEDUPE: Duration = Duration::from_secs(30 * 60);
 enum UserEvent {
     Snapshot(Box<Snapshot>),
     Menu(MenuId),
-    Advice {
-        result: Result<String, String>,
-        auto: bool,
+    Analysis {
+        result: Result<prompt::Reply, String>,
+        manual: bool,
     },
     ProcAnswer {
         name: String,
-        result: Result<String, String>,
+        result: Result<(Verdict, String), String>,
     },
     KeyStatus(Provider, bool),
     /// Ok(true) = enregistrée, Ok(false) = annulé.
@@ -146,12 +149,14 @@ struct App {
     last: Option<Snapshot>,
     top: ProcTop,
     active: Vec<Anomaly>,
-    advice: Option<(String, bool)>,
+    llm_advice: Option<String>,
+    error: Option<String>,
     keys: HashMap<Provider, bool>,
     busy: bool,
     pending_procs: HashSet<String>,
     notified: HashMap<String, Instant>,
     title: String,
+    title_first: bool,
 }
 
 impl App {
@@ -186,12 +191,14 @@ impl App {
             last: None,
             top: ProcTop::default(),
             active: Vec::new(),
-            advice: None,
+            llm_advice: None,
+            error: None,
             keys: HashMap::new(),
             busy: false,
             pending_procs: HashSet::new(),
             notified: HashMap::new(),
             title: String::new(),
+            title_first: true,
         })
     }
 
@@ -199,18 +206,37 @@ impl App {
         self.keys.get(&self.cfg.provider).copied().unwrap_or(false)
     }
 
+    fn build_report(&self) -> Option<report::Report> {
+        let snap = self.last.as_ref()?;
+        Some(report::build(&report::Inputs {
+            snap,
+            top: &self.top,
+            cache: &self.explanations,
+            th: &self.cfg.thresholds,
+            has_key: self.has_key(),
+            llm_advice: self.llm_advice.as_deref(),
+            error: self.error.as_deref(),
+        }))
+    }
+
+    fn refresh_procs_menu(&self) {
+        let th = &self.cfg.thresholds;
+        let verdicts: Vec<Verdict> = self
+            .top
+            .by_cpu
+            .iter()
+            .map(|p| report::judge(p, &self.explanations, th).verdict)
+            .collect();
+        self.menu.update_procs(&self.top, &verdicts);
+    }
+
+    /// Ligne de résumé du menu (« Bilan : 5 normaux, 1 à surveiller »).
     fn refresh_advice_line(&self) {
-        match &self.advice {
-            Some((t, false)) => self
-                .menu
-                .set_advice_line(&format!("Dernier conseil : {}", one_line(t, 60)), true),
-            Some((t, true)) => self
-                .menu
-                .set_advice_line(&format!("Erreur IA : {}", one_line(t, 60)), true),
-            None if !self.has_key() => self
-                .menu
-                .set_advice_line("Configure une clé API pour des conseils IA", false),
-            None => self.menu.set_advice_line("Dernier conseil : aucun", false),
+        if let Some(e) = &self.error {
+            self.menu
+                .set_advice_line(&format!("Erreur IA : {}", one_line(e, 60)));
+        } else if let Some(r) = self.build_report() {
+            self.menu.set_advice_line(&r.summary);
         }
     }
 
@@ -219,30 +245,41 @@ impl App {
         match ev {
             UserEvent::Snapshot(s) => self.on_snapshot(*s),
             UserEvent::Menu(id) => return self.on_menu(&id),
-            UserEvent::Advice { result, auto } => {
+            UserEvent::Analysis { result, manual } => {
                 self.busy = false;
                 self.menu.set_busy(false);
                 match result {
-                    Ok(text) => {
-                        dialogs::notify(&one_line(&text, 220));
-                        self.advice = Some((text, false));
+                    Ok(reply) => {
+                        self.explanations.insert_many(reply.items);
+                        self.llm_advice = reply.advice;
+                        self.error = None;
+                        self.finish_analysis(manual);
                     }
                     Err(e) => {
                         dialogs::notify(&e);
-                        // Une erreur d'appel automatique ne remplace pas un bon conseil.
-                        if !auto || self.advice.is_none() {
-                            self.advice = Some((e, true));
+                        self.error = Some(e);
+                        self.refresh_procs_menu();
+                        self.refresh_advice_line();
+                        if manual && let Some(r) = self.build_report() {
+                            show_dialog(r.text);
                         }
                     }
                 }
-                self.refresh_advice_line();
             }
             UserEvent::ProcAnswer { name, result } => {
                 self.pending_procs.remove(&name);
                 match result {
-                    Ok(text) => {
-                        self.explanations.insert(&name, text.clone());
-                        show_dialog(format!("{name}\n\n{text}"));
+                    Ok((verdict, text)) => {
+                        self.explanations
+                            .insert_many([(name.clone(), verdict, text.clone())]);
+                        show_dialog(format!(
+                            "{} {} — {}\n\n{text}",
+                            verdict.emoji(),
+                            known::strip_decor(&name),
+                            verdict.label()
+                        ));
+                        self.refresh_procs_menu();
+                        self.refresh_advice_line();
                     }
                     Err(e) => dialogs::notify(&e),
                 }
@@ -275,7 +312,6 @@ impl App {
     fn on_snapshot(&mut self, snap: Snapshot) {
         if let Some(top) = &snap.procs {
             self.top = top.clone();
-            self.menu.update_procs(top);
         }
         self.menu.update_metrics(&snap);
 
@@ -308,7 +344,13 @@ impl App {
             self.tray.set_title(Some(&title));
             self.title = title;
         }
+        let procs_fresh = snap.procs.is_some();
         self.last = Some(snap);
+        if procs_fresh || self.title_first {
+            self.title_first = false;
+            self.refresh_procs_menu();
+            self.refresh_advice_line();
+        }
 
         if !update.started.is_empty() {
             self.on_anomalies(&update.started);
@@ -332,35 +374,55 @@ impl App {
                 dialogs::notify(&format!("⚠️ {}.{hint}", a.detail));
             }
         }
-        if self.has_key() && !self.busy {
+        let needs_llm = !report::unknown(&self.top, &self.explanations).is_empty();
+        if needs_llm && self.has_key() && !self.busy {
             let sigs: Vec<String> = started.iter().map(Anomaly::signature).collect();
             if self.cfg.gate.try_auto(now_secs(), &sigs) {
                 self.cfg.save();
-                self.start_analysis(true);
+                self.start_analysis(false);
             }
         }
     }
 
-    fn start_analysis(&mut self, auto: bool) {
-        let Some(snap) = &self.last else { return };
+    /// Bilan : 100 % local si tous les processus sont connus (ou sans clé) ;
+    /// sinon le LLM ne juge que les inconnus.
+    fn start_analysis(&mut self, manual: bool) {
         if self.busy {
             return;
         }
-        let user = prompt::analysis(snap, &self.top, &self.active);
+        let Some(snap) = self.last.clone() else {
+            return;
+        };
+        let unknown = report::unknown(&self.top, &self.explanations);
+        if unknown.is_empty() || !self.has_key() {
+            self.llm_advice = None;
+            self.finish_analysis(manual);
+            return;
+        }
+        let alerts: Vec<&str> = self.active.iter().map(|a| a.kind.label()).collect();
+        let user = prompt::analysis(&snap, &alerts, &unknown);
+        let sent: Vec<String> = unknown.iter().map(|p| p.name.clone()).collect();
+        let max_tokens = prompt::analysis_tokens(unknown.len());
         let (provider, model) = (self.cfg.provider, self.cfg.model(self.cfg.provider));
         self.busy = true;
         self.menu.set_busy(true);
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = call_llm(
-                provider,
-                &model,
-                prompt::SYSTEM,
-                &user,
-                prompt::MAX_TOKENS_ANALYSIS,
-            );
-            let _ = proxy.send_event(UserEvent::Advice { result, auto });
+            let result = call_llm(provider, &model, prompt::SYSTEM, &user, max_tokens)
+                .and_then(|t| prompt::parse_reply(&t, &sent).map_err(String::from));
+            let _ = proxy.send_event(UserEvent::Analysis { result, manual });
         });
+    }
+
+    fn finish_analysis(&mut self, manual: bool) {
+        self.refresh_procs_menu();
+        self.refresh_advice_line();
+        if let Some(r) = self.build_report() {
+            dialogs::notify(&r.notify);
+            if manual {
+                show_dialog(r.text);
+            }
+        }
     }
 
     fn on_menu(&mut self, id: &MenuId) -> bool {
@@ -369,16 +431,10 @@ impl App {
         };
         match action {
             Action::Quit => return true,
-            Action::Analyze => {
-                if self.has_key() {
-                    self.start_analysis(false);
-                } else {
-                    dialogs::notify(&LlmError::NoKey.to_string());
-                }
-            }
+            Action::Analyze => self.start_analysis(true),
             Action::FullAdvice => {
-                if let Some((t, _)) = &self.advice {
-                    show_dialog(t.clone());
+                if let Some(r) = self.build_report() {
+                    show_dialog(r.text);
                 }
             }
             Action::Process(i) => self.ask_process(i),
@@ -439,18 +495,28 @@ impl App {
         let Some(info) = self.top.by_cpu.get(i).cloned() else {
             return;
         };
-        if let Some(text) = self.explanations.get(&info.name) {
-            show_dialog(format!("{}\n\n{text}", info.name));
+        let name = known::strip_decor(&info.name).to_string();
+        let k = report::judge(&info, &self.explanations, &self.cfg.thresholds);
+        if k.verdict != Verdict::Unknown {
+            show_dialog(format!(
+                "{} {name} — {}\n\n{}",
+                k.verdict.emoji(),
+                k.verdict.label(),
+                k.text
+            ));
             return;
         }
         if !self.has_key() {
-            dialogs::notify(&LlmError::NoKey.to_string());
+            show_dialog(format!(
+                "❓ {name} — Inconnu\n\nConfigure une clé IA pour identifier ce processus (Fournisseur IA > Configurer la clé API…)."
+            ));
             return;
         }
         if !self.pending_procs.insert(info.name.clone()) {
             return;
         }
-        let user = prompt::process(&info.name, Some(&info));
+        let user = prompt::process(&info);
+        let sent = vec![info.name.clone()];
         let (provider, model) = (self.cfg.provider, self.cfg.model(self.cfg.provider));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
@@ -460,7 +526,15 @@ impl App {
                 prompt::SYSTEM_PROCESS,
                 &user,
                 prompt::MAX_TOKENS_PROCESS,
-            );
+            )
+            .and_then(|t| prompt::parse_reply(&t, &sent).map_err(String::from))
+            .and_then(|r| {
+                r.items
+                    .into_iter()
+                    .next()
+                    .map(|(_, v, t)| (v, t))
+                    .ok_or_else(|| prompt::UNREADABLE.to_string())
+            });
             let _ = proxy.send_event(UserEvent::ProcAnswer {
                 name: info.name,
                 result,
@@ -565,11 +639,31 @@ fn dump() {
             );
         }
         let cfg = Config::load();
+        let cache = Explanations::load();
+        let snap2 = s.sample(Refresh::NONE);
+        let unknown = report::unknown(&top, &cache);
+        println!(
+            "\nProcessus à soumettre au LLM : {} (0 = aucun appel nécessaire)",
+            unknown.len()
+        );
         println!(
             "Prompt d'exemple :\n{}",
-            prompt::analysis(&s.sample(Refresh::NONE), &top, &[])
+            prompt::analysis(&snap2, &[], &unknown)
         );
         println!("(fournisseur configuré : {})", cfg.provider.label());
+        let r = report::build(&report::Inputs {
+            snap: &snap2,
+            top: &top,
+            cache: &cache,
+            th: &cfg.thresholds,
+            has_key: false,
+            llm_advice: None,
+            error: None,
+        });
+        println!(
+            "\n===== Bilan local =====\n{}\n\n{} {:?}",
+            r.text, r.summary, r.counts
+        );
     }
 }
 

@@ -1,5 +1,6 @@
 //! Menu de la barre de menus : créé une fois, mis à jour sur place.
 
+use crate::known::Verdict;
 use crate::llm::Provider;
 use crate::metrics::{ProcTop, Snapshot, fmt_go, fmt_mem};
 use std::cell::RefCell;
@@ -77,8 +78,8 @@ impl AppMenu {
             procs_sub.append(&p.item)?;
         }
 
-        let advice = Line::new(info("Configure une clé API pour des conseils IA"));
-        let full = MenuItem::new("Voir le conseil complet", false, None);
+        let advice = Line::new(info("Bilan : en attente des mesures"));
+        let full = MenuItem::new("Voir le bilan", true, None);
         let analyze = MenuItem::new("Analyser maintenant", true, None);
 
         let prov_sub = Submenu::new("Fournisseur IA", true);
@@ -174,7 +175,7 @@ impl AppMenu {
         });
     }
 
-    pub fn update_procs(&self, top: &ProcTop) {
+    pub fn update_procs(&self, top: &ProcTop, verdicts: &[Verdict]) {
         for (i, item) in self.procs.iter().enumerate() {
             match top.by_cpu.get(i) {
                 Some(p) => {
@@ -183,7 +184,13 @@ impl AppMenu {
                     } else {
                         p.name.clone()
                     };
-                    item.set(format!("{name} — {:.0} % CPU — {}", p.cpu, fmt_mem(p.mem)));
+                    let v = verdicts.get(i).copied().unwrap_or(Verdict::Unknown);
+                    item.set(format!(
+                        "{} {name} — {:.0} % CPU — {}",
+                        v.emoji(),
+                        p.cpu,
+                        fmt_mem(p.mem)
+                    ));
                     item.item.set_enabled(true);
                 }
                 None => {
@@ -194,9 +201,8 @@ impl AppMenu {
         }
     }
 
-    pub fn set_advice_line(&self, text: &str, has_full: bool) {
+    pub fn set_advice_line(&self, text: &str) {
         self.advice.set(text);
-        self.full.set_enabled(has_full);
     }
 
     pub fn set_busy(&self, busy: bool) {
