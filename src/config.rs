@@ -111,4 +111,17 @@ mod tests {
         assert_eq!(c.provider, Provider::OpenAi);
         assert_eq!(c.thresholds.cpu_samples, 5);
     }
+
+    #[test]
+    fn v01_config_without_openrouter_loads() {
+        let json = r#"{"provider":"gemini","models":{"gemini":"gemini-2.5-pro"},
+            "thresholds":{"cpu_pct":85.0},"launch_at_login":true,
+            "gate":{"global_secs":1800,"signature_secs":7200,"last_auto":5,"signatures":{}}}"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(c.provider, Provider::Gemini);
+        assert_eq!(c.model(Provider::OpenRouter), "openrouter/free");
+        assert_eq!(c.model(Provider::Gemini), "gemini-2.5-pro");
+        let c2: Config = serde_json::from_str(r#"{"provider":"openrouter"}"#).unwrap();
+        assert_eq!(c2.provider, Provider::OpenRouter);
+    }
 }

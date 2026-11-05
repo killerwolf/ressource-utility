@@ -13,7 +13,7 @@ Utilitaire léger en Rust pour la barre des menus macOS qui surveille CPU, mémo
   - processus > 80 % CPU
 - Conseils IA courts, en français
 - Explication d'un processus inconnu en un clic (réponse mise en cache, jamais payée deux fois)
-- Choix du fournisseur (Anthropic, Gemini, OpenAI/Codex) et du modèle
+- Choix du fournisseur (Anthropic, Gemini, OpenAI/Codex, OpenRouter gratuit) et du modèle
 - Clé API stockée dans le Trousseau macOS
 - Lancement au démarrage
 - Aucune icône dans le Dock
@@ -42,11 +42,19 @@ Utilitaire léger en Rust pour la barre des menus macOS qui surveille CPU, mémo
 ## Configuration
 
 - Ouvrez le menu de la barre des menus puis :
-  - **Fournisseur IA** : choisissez Anthropic, Gemini ou OpenAI/Codex.
+  - **Fournisseur IA** : choisissez Anthropic, Gemini, OpenAI/Codex ou OpenRouter (gratuit).
   - **Configurer la clé API…** : enregistre la clé dans le Trousseau macOS.
   - **Changer le modèle…** : choisissez un autre modèle.
-- Modèles par défaut : `claude-haiku-5-5`, `gemini-2.5-flash`, `gpt-5-mini`.
+- Modèles par défaut : `claude-haiku-5-5`, `gemini-2.5-flash`, `gpt-5-mini`, `openrouter/free`.
 - Fichier de configuration : `~/Library/Application Support/ressource-utility/config.json`
+
+## Essayer gratuitement avec OpenRouter
+
+1. Créez une clé sur <https://openrouter.ai/keys>.
+2. Dans le menu : **Fournisseur IA** puis **OpenRouter (gratuit)**.
+3. **Configurer la clé API…** et collez la clé.
+
+Le modèle par défaut `openrouter/free` choisit automatiquement un modèle gratuit disponible. Vous pouvez en saisir un autre via **Changer le modèle…**, par exemple `google/gemma-4-31b-it:free`. Le palier gratuit est limité en débit : en cas d'erreur 429, réessayez plus tard.
 
 ## Développement
 

@@ -11,16 +11,24 @@ pub enum Provider {
     Anthropic,
     Gemini,
     OpenAi,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 3] = [Provider::Anthropic, Provider::Gemini, Provider::OpenAi];
+    pub const ALL: [Provider; 4] = [
+        Provider::Anthropic,
+        Provider::Gemini,
+        Provider::OpenAi,
+        Provider::OpenRouter,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Provider::Anthropic => "anthropic",
             Provider::Gemini => "gemini",
             Provider::OpenAi => "openai",
+            Provider::OpenRouter => "openrouter",
         }
     }
 
@@ -29,6 +37,7 @@ impl Provider {
             Provider::Anthropic => "Anthropic",
             Provider::Gemini => "Gemini",
             Provider::OpenAi => "OpenAI (Codex)",
+            Provider::OpenRouter => "OpenRouter (gratuit)",
         }
     }
 
@@ -37,6 +46,7 @@ impl Provider {
             Provider::Anthropic => "claude-haiku-5-5",
             Provider::Gemini => "gemini-2.5-flash",
             Provider::OpenAi => "gpt-5-mini",
+            Provider::OpenRouter => "openrouter/free",
         }
     }
 }
@@ -48,6 +58,12 @@ pub enum LlmError {
     Parse,
     Empty,
     NoKey,
+    /// Limite du palier gratuit OpenRouter (429).
+    FreeLimit,
+    /// Erreur HTTP avec le message renvoyé par le service (tronqué).
+    Api(u16, String),
+    /// Texte vide après nettoyage (modèle de raisonnement épuisé, etc.).
+    EmptyModel,
 }
 
 impl fmt::Display for LlmError {
@@ -56,12 +72,19 @@ impl fmt::Display for LlmError {
             LlmError::Http(c @ (401 | 403)) => write!(f, "Clé API invalide ({c})"),
             LlmError::Http(404) => write!(f, "Modèle introuvable (404), vérifie le nom du modèle"),
             LlmError::Http(400) => write!(f, "Requête refusée (400), vérifie le modèle"),
+            LlmError::Http(402) => write!(f, "Crédits insuffisants (402)"),
             LlmError::Http(429) => write!(f, "Quota ou limite de débit dépassé (429)"),
             LlmError::Http(c) if *c >= 500 => write!(f, "Service IA indisponible ({c})"),
             LlmError::Http(c) => write!(f, "Erreur du service IA ({c})"),
             LlmError::Network(_) => write!(f, "Réseau indisponible ou délai dépassé"),
             LlmError::Parse => write!(f, "Réponse inattendue du service IA"),
             LlmError::Empty => write!(f, "Réponse vide du service IA"),
+            LlmError::FreeLimit => write!(f, "Limite gratuite atteinte (429) — réessaie plus tard"),
+            LlmError::Api(c, m) => write!(f, "Erreur du service IA ({c}) : {m}"),
+            LlmError::EmptyModel => write!(
+                f,
+                "Réponse vide du modèle — essaie un autre modèle via « Changer le modèle… »"
+            ),
             LlmError::NoKey => write!(f, "Configure une clé API pour des conseils IA"),
         }
     }
@@ -117,6 +140,28 @@ pub fn build_request(
                 }),
             }
         }
+        Provider::OpenRouter => Request {
+            url: "https://openrouter.ai/api/v1/chat/completions".into(),
+            headers: vec![
+                ("Authorization", format!("Bearer {key}")),
+                ("X-Title", "Ressource Utility".into()),
+                (
+                    "HTTP-Referer",
+                    "https://github.com/ressource-utility".into(),
+                ),
+            ],
+            body: json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                // Les modèles gratuits sont souvent des modèles de raisonnement :
+                // budget de sortie élargi, raisonnement court et masqué.
+                "max_tokens": max_tokens * 4,
+                "reasoning": {"effort": "low", "exclude": true},
+            }),
+        },
         Provider::OpenAi => {
             let mut body = json!({
                 "model": model,
@@ -135,6 +180,42 @@ pub fn build_request(
                 url: "https://api.openai.com/v1/chat/completions".into(),
                 headers: vec![("Authorization", format!("Bearer {key}"))],
                 body,
+            }
+        }
+    }
+}
+
+/// Retire les blocs `<think>…</think>` (bloc non fermé : tout le reste).
+fn strip_think(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => return out.trim().to_string(),
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+/// Erreur HTTP -> message court ; `body` sert à extraire `error.message`.
+fn http_error(p: Provider, status: u16, body: Option<&Value>) -> LlmError {
+    if p != Provider::OpenRouter {
+        return LlmError::Http(status);
+    }
+    match status {
+        401..=403 => LlmError::Http(status),
+        429 => LlmError::FreeLimit,
+        _ => {
+            let msg = body
+                .and_then(|b| b.pointer("/error/message"))
+                .and_then(Value::as_str)
+                .map(|m| m.chars().take(120).collect::<String>());
+            match msg {
+                Some(m) if !m.is_empty() => LlmError::Api(status, m),
+                _ => LlmError::Http(status),
             }
         }
     }
@@ -159,7 +240,18 @@ pub fn parse_response(p: Provider, body: &Value) -> Result<String, LlmError> {
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        Provider::OpenRouter => body
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .map(strip_think),
     };
+    if p == Provider::OpenRouter {
+        return match text {
+            None => Err(LlmError::Parse),
+            Some(t) if t.trim().is_empty() => Err(LlmError::EmptyModel),
+            Some(t) => Ok(t.trim().to_string()),
+        };
+    }
     match text {
         None => Err(LlmError::Parse),
         Some(t) if t.trim().is_empty() => Err(LlmError::Empty),
@@ -190,7 +282,8 @@ pub fn ask(
         .map_err(|e| LlmError::Network(e.to_string()))?;
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
-        return Err(LlmError::Http(status));
+        let body: Option<Value> = resp.body_mut().read_json().ok();
+        return Err(http_error(p, status, body.as_ref()));
     }
     let json: Value = resp.body_mut().read_json().map_err(|_| LlmError::Parse)?;
     parse_response(p, &json)
@@ -266,5 +359,95 @@ mod tests {
         assert_eq!(r.body["max_completion_tokens"], 200);
         assert_eq!(r.body["messages"][0]["role"], "system");
         assert_eq!(r.headers[0].1, "Bearer k");
+    }
+
+    #[test]
+    fn openrouter_parsing() {
+        let p = Provider::OpenRouter;
+        let ok = r#"{"choices":[{"message":{"role":"assistant","content":"  - Ferme X\n"}}]}"#;
+        assert_eq!(parse(p, ok).unwrap(), "- Ferme X");
+        let think = r#"{"choices":[{"message":{"content":"<think>je réfléchis\nlongtemps</think>\n\nFerme Y."}}]}"#;
+        assert_eq!(parse(p, think).unwrap(), "Ferme Y.");
+        let only_think = r#"{"choices":[{"message":{"content":"<think>pas fini"}}]}"#;
+        assert_eq!(parse(p, only_think), Err(LlmError::EmptyModel));
+        let empty = r#"{"choices":[{"message":{"content":null}}]}"#;
+        assert_eq!(parse(p, empty), Err(LlmError::Parse));
+        let blank = r#"{"choices":[{"message":{"content":" "}}]}"#;
+        let e = parse(p, blank).unwrap_err();
+        assert!(e.to_string().contains("Changer le modèle"));
+    }
+
+    #[test]
+    fn openrouter_request_shape() {
+        let r = build_request(
+            Provider::OpenRouter,
+            "k",
+            "openrouter/free",
+            "sys",
+            "usr",
+            200,
+        );
+        assert_eq!(r.url, "https://openrouter.ai/api/v1/chat/completions");
+        let h = |n: &str| {
+            r.headers
+                .iter()
+                .find(|(k, _)| *k == n)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(h("Authorization"), Some("Bearer k"));
+        assert_eq!(h("X-Title"), Some("Ressource Utility"));
+        assert_eq!(
+            h("HTTP-Referer"),
+            Some("https://github.com/ressource-utility")
+        );
+        assert_eq!(r.body["max_tokens"], 800);
+        assert_eq!(r.body["reasoning"]["effort"], "low");
+        assert_eq!(r.body["reasoning"]["exclude"], true);
+        assert!(r.body.get("reasoning_effort").is_none());
+        assert!(r.body.get("max_completion_tokens").is_none());
+        assert_eq!(r.body["messages"][1]["content"], "usr");
+    }
+
+    #[test]
+    fn openrouter_error_mapping() {
+        let p = Provider::OpenRouter;
+        assert_eq!(
+            http_error(p, 401, None).to_string(),
+            "Clé API invalide (401)"
+        );
+        assert_eq!(
+            http_error(p, 402, None).to_string(),
+            "Crédits insuffisants (402)"
+        );
+        assert_eq!(
+            http_error(p, 429, None).to_string(),
+            "Limite gratuite atteinte (429) — réessaie plus tard"
+        );
+        let body: Value =
+            serde_json::from_str(r#"{"error":{"message":"No endpoints found"}}"#).unwrap();
+        assert!(
+            http_error(p, 404, Some(&body))
+                .to_string()
+                .contains("No endpoints found")
+        );
+        assert_eq!(http_error(p, 500, None), LlmError::Http(500));
+        let long = json!({"error": {"message": "x".repeat(500)}});
+        assert!(http_error(p, 400, Some(&long)).to_string().len() < 200);
+    }
+
+    /// Requête réelle avec une fausse clé : `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn openrouter_invalid_key_live() {
+        let e = ask(
+            Provider::OpenRouter,
+            "sk-or-invalid",
+            "openrouter/free",
+            "s",
+            "u",
+            20,
+        )
+        .unwrap_err();
+        assert_eq!(e.to_string(), "Clé API invalide (401)");
     }
 }
