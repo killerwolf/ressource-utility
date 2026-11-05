@@ -188,13 +188,11 @@ html,body{margin:0;height:100%;background:#0b0d22;overflow:hidden}
       <div class="mi${h("quit")}"><span>Quitter</span><span class="kbd">⌘Q</span></div></div>`;
   };
 
-  /* Sous-menu « Processus » : 8 lignes, « — » pour les lignes libres (ux.rs). */
+  /* Sous-menu « Processus » : seulement les lignes utiles (au plus 8) ; liste vide :
+     une ligne désactivée « Aucun processus notable ». */
   RU.submenu = ({ entries, hoverIdx }) => {
-    const rows = [];
-    for (let i = 0; i < 8; i++) {
-      const e = entries[i];
-      rows.push(e ? `<div class="mi${hoverIdx === i ? " hover" : ""}"><span>${esc(e)}</span></div>` : `<div class="mi dis"><span>—</span></div>`);
-    }
+    const rows = entries.slice(0, 8).map((e, i) => `<div class="mi${hoverIdx === i ? " hover" : ""}"><span>${esc(e)}</span></div>`);
+    if (!rows.length) rows.push(`<div class="mi dis"><span>Aucun processus notable</span></div>`);
     // à gauche du menu principal (la barre des menus est collée au bord droit de l'écran)
     return `<div class="menu sub" style="top:188px;right:${24 + 330 + 2}px">${rows.join("")}</div>`;
   };
