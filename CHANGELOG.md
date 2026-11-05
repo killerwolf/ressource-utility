@@ -7,6 +7,17 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 
 ## [Unreleased]
 
+### Changed
+
+- Le menu a une seule place par notion : une phrase d'état en tête (« ✅ Tout va bien », « ⚠️ Disque presque plein — 14 Go libres », « 🛑 Logiciel suspect : … »), les mesures avec mini-courbes, une liste **Processus** (suspects d'abord, puis les plus gourmands, un clic ouvre un dialogue avec « Afficher dans le Finder » et « Forcer à quitter… » pour les processus non système), **Bilan de santé…** (refait l'analyse s'il a plus de 5 minutes, bouton « Actualiser »), **Réglages…** (⌘,) et **Quitter** (⌘Q).
+- Le fournisseur d'IA, le lancement au démarrage et « Voir ce qui est envoyé à l'IA… » ne se règlent plus que dans **Réglages…**, désormais en deux sections (Général, Intelligence artificielle).
+- Le préfixe de la barre des menus passe par 🛑, 🔥 puis ⚠️ selon la gravité, et l'infobulle reprend la phrase d'état.
+
+### Fixed
+
+- Pour un processus suspect qui n'est pas un mineur connu, la question à l'IA (avec les signaux collectés) est bien posée quand une clé est configurée.
+- Les processus du même programme (« Foo Helper (Renderer) », « Foo Helper (GPU) ») sont regroupés sur une seule ligne.
+
 ## [0.1.0] - 2026-11-05
 
 ### Added

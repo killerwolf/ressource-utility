@@ -16,6 +16,7 @@ mod report;
 mod secrets;
 mod security;
 mod settings;
+mod ux;
 
 use anomaly::{Anomaly, Detector, Sample};
 use config::{Config, Explanations};
@@ -23,7 +24,7 @@ use history::History;
 use known::Verdict;
 use llm::{LlmError, Provider};
 use menu::{Action, AppMenu, one_line};
-use metrics::{ProcTop, Refresh, Sampler, Snapshot, fmt_go};
+use metrics::{ProcInfo, ProcTop, Refresh, Sampler, Snapshot, fmt_go};
 use security::{Auditor, Finding};
 use settings::{SettingsAction, SettingsWindow};
 use std::collections::{HashMap, HashSet};
@@ -50,6 +51,7 @@ enum UserEvent {
     },
     ProcAnswer {
         name: String,
+        pid: u32,
         result: Result<(Verdict, String), String>,
         security: bool,
     },
@@ -61,6 +63,8 @@ enum UserEvent {
     /// Ok(true) = enregistrée, Ok(false) = annulé.
     KeyEntered(Provider, Result<bool, String>),
     Settings(SettingsAction),
+    /// Bouton « Actualiser » du bilan.
+    RefreshReport,
     ModelsLoaded(Provider, Result<Vec<String>, String>),
     TestResult(String),
     KeyDeleted(Provider, Result<(), String>),
@@ -183,6 +187,9 @@ struct App {
     notified: HashMap<String, Instant>,
     title: String,
     title_first: bool,
+    tooltip: String,
+    entries: Vec<ux::Entry>,
+    report_at: Option<Instant>,
     auditor: Arc<Mutex<Auditor>>,
     proc_findings: Vec<Finding>,
     startup_findings: Vec<Finding>,
@@ -199,7 +206,7 @@ impl App {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Option<Self> {
         let mut cfg = Config::load();
         cfg.launch_at_login = autostart::is_enabled();
-        let menu = AppMenu::build(cfg.provider, cfg.launch_at_login).ok()?;
+        let menu = AppMenu::build().ok()?;
         let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu.menu.clone()))
             .with_title("…")
@@ -255,6 +262,9 @@ impl App {
             notified: HashMap::new(),
             title: String::new(),
             title_first: true,
+            tooltip: String::new(),
+            entries: Vec::new(),
+            report_at: None,
             auditor: Arc::new(Mutex::new(Auditor::new())),
             proc_findings: Vec::new(),
             startup_findings: Vec::new(),
@@ -287,24 +297,35 @@ impl App {
         }))
     }
 
-    fn refresh_procs_menu(&self) {
+    fn refresh_procs_menu(&mut self) {
         let th = &self.cfg.thresholds;
-        let verdicts: Vec<Verdict> = self
-            .top
-            .by_cpu
-            .iter()
-            .map(|p| report::judge(p, &self.explanations, th, &self.findings).verdict)
-            .collect();
-        self.menu.update_procs(&self.top, &verdicts);
+        let (cache, findings) = (&self.explanations, &self.findings);
+        self.entries = ux::entries(&self.top, findings, |p| {
+            report::judge(p, cache, th, findings).verdict
+        });
+        self.menu.update_procs(&self.entries);
     }
 
-    /// Ligne de résumé du menu (« Bilan : 5 normaux, 1 à surveiller »).
-    fn refresh_advice_line(&self) {
-        if let Some(e) = &self.error {
-            self.menu
-                .set_advice_line(&format!("Erreur IA : {}", one_line(e, 60)));
-        } else if let Some(r) = self.build_report() {
-            self.menu.set_advice_line(&r.summary);
+    /// Phrase d'état du menu, préfixe du titre et infobulle.
+    fn refresh_headline(&mut self) {
+        let Some(snap) = &self.last else { return };
+        let h = ux::headline(snap, &self.active, &self.findings);
+        self.menu.set_headline(&h.text);
+        let title = format!(
+            "{}{:.0}% · {:.0}% · {:.0}G",
+            h.severity.tray_prefix(),
+            snap.cpu,
+            snap.mem_pct(),
+            snap.disk_avail as f64 / 1e9
+        );
+        let tip = format!("{}\nCPU · Mémoire · Disque libre", h.text);
+        if title != self.title {
+            self.tray.set_title(Some(&title));
+            self.title = title;
+        }
+        if tip != self.tooltip {
+            let _ = self.tray.set_tooltip(Some(&tip));
+            self.tooltip = tip;
         }
     }
 
@@ -327,9 +348,11 @@ impl App {
                         dialogs::notify(&e);
                         self.error = Some(e);
                         self.refresh_procs_menu();
-                        self.refresh_advice_line();
-                        if manual && let Some(r) = self.build_report() {
-                            show_dialog(r.text);
+                        self.refresh_headline();
+                        // Pas de date : le prochain clic relancera l'analyse.
+                        self.report_at = None;
+                        if manual {
+                            self.show_report();
                         }
                     }
                 }
@@ -344,8 +367,13 @@ impl App {
                 }
                 self.merge_findings();
             }
+            UserEvent::RefreshReport => {
+                self.report_at = None;
+                self.start_analysis(true);
+            }
             UserEvent::ProcAnswer {
                 name,
+                pid,
                 result,
                 security,
             } => {
@@ -355,44 +383,45 @@ impl App {
                         self.ai_opinions
                             .insert(known::normalize(&name), (verdict, text.clone()));
                         self.merge_findings();
-                        let local = self
-                            .findings
-                            .iter()
-                            .find(|f| {
-                                f.startup.is_none()
-                                    && known::normalize(&f.name) == known::normalize(&name)
-                            })
-                            .map(|f| security_dialog(f, Some(&text)));
-                        if let Some(d) = local {
-                            show_dialog(d);
-                        } else {
-                            show_dialog(format!("{} {name}\n\n{text}", verdict.emoji()));
+                        let finding = self.finding_named(&name).cloned();
+                        match finding {
+                            Some(f) => present(
+                                security_dialog(&f, Some(&text)),
+                                self.target_for(&name, pid),
+                            ),
+                            None => present(
+                                format!("{} {name}\n\n{text}", verdict.emoji()),
+                                self.target_for(&name, pid),
+                            ),
                         }
                     }
                     Ok((verdict, text)) => {
                         self.explanations
                             .insert_many([(name.clone(), verdict, text.clone())]);
-                        show_dialog(format!(
-                            "{} {} — {}\n\n{text}",
-                            verdict.emoji(),
-                            known::strip_decor(&name),
-                            verdict.label()
-                        ));
+                        present(
+                            format!(
+                                "{} {} — {}\n\n{text}",
+                                verdict.emoji(),
+                                known::strip_decor(&name),
+                                verdict.label()
+                            ),
+                            self.target_for(&name, pid),
+                        );
                         self.refresh_procs_menu();
-                        self.refresh_advice_line();
+                        self.refresh_headline();
                     }
                     Err(e) => dialogs::notify(&e),
                 }
             }
             UserEvent::KeyStatus(p, ok) => {
                 self.keys.insert(p, ok);
-                self.refresh_advice_line();
+                self.refresh_headline();
             }
             UserEvent::KeyEntered(p, res) => match res {
                 Ok(true) => {
                     self.keys.insert(p, true);
                     dialogs::notify(&format!("Clé {} enregistrée dans le Trousseau", p.label()));
-                    self.refresh_advice_line();
+                    self.refresh_headline();
                 }
                 Ok(false) => {}
                 Err(e) => dialogs::notify(&e),
@@ -411,7 +440,7 @@ impl App {
                         w.set_key_exists(false);
                         w.set_status("Clé supprimée du Trousseau.");
                     }
-                    self.refresh_advice_line();
+                    self.refresh_headline();
                 }
                 Err(e) => dialogs::notify(&e),
             },
@@ -446,7 +475,7 @@ impl App {
 
         let procs_fresh = snap.procs.is_some();
         self.last = Some(snap);
-        self.update_title();
+        self.refresh_headline();
         if procs_fresh {
             self.spawn_scan();
         }
@@ -460,32 +489,11 @@ impl App {
         if procs_fresh || self.title_first {
             self.title_first = false;
             self.refresh_procs_menu();
-            self.refresh_advice_line();
+            self.refresh_headline();
         }
 
         if !update.started.is_empty() {
             self.on_anomalies(&update.started);
-        }
-    }
-
-    fn update_title(&mut self) {
-        let Some(snap) = &self.last else { return };
-        let prefix = if self.findings.iter().any(|f| f.verdict == Verdict::Abnormal) {
-            "🛑 "
-        } else if self.active.is_empty() {
-            ""
-        } else {
-            "⚠️ "
-        };
-        let title = format!(
-            "{prefix}{:.0}% · {:.0}% · {:.0}G",
-            snap.cpu,
-            snap.mem_pct(),
-            snap.disk_avail as f64 / 1e9
-        );
-        if title != self.title {
-            self.tray.set_title(Some(&title));
-            self.title = title;
         }
     }
 
@@ -570,10 +578,9 @@ impl App {
                 self.cfg.save();
             }
         }
-        self.menu.update_security(&self.findings);
-        self.update_title();
+        self.refresh_headline();
         self.refresh_procs_menu();
-        self.refresh_advice_line();
+        self.refresh_headline();
     }
 
     fn on_anomalies(&mut self, started: &[Anomaly]) {
@@ -581,6 +588,9 @@ impl App {
             ""
         } else {
             " Configure une clé API pour des conseils IA."
+        };
+        let Some(snap) = self.last.clone() else {
+            return;
         };
         for a in started {
             let sig = a.signature();
@@ -590,7 +600,7 @@ impl App {
                 .is_some_and(|t| t.elapsed() < NOTIFY_DEDUPE);
             if !recent {
                 self.notified.insert(sig, Instant::now());
-                dialogs::notify(&format!("⚠️ {}.{hint}", a.detail));
+                dialogs::notify(&format!("{}.{hint}", ux::alert_phrase(a, &snap)));
             }
         }
         let needs_llm = !report::unknown(&self.top, &self.explanations, &self.findings).is_empty();
@@ -636,13 +646,31 @@ impl App {
 
     fn finish_analysis(&mut self, manual: bool) {
         self.refresh_procs_menu();
-        self.refresh_advice_line();
+        self.refresh_headline();
+        self.report_at = Some(Instant::now());
         if let Some(r) = self.build_report() {
             dialogs::notify(&r.notify);
             if manual {
-                show_dialog(r.text);
+                self.show_report_text(r.text);
             }
         }
+    }
+
+    fn show_report(&self) {
+        if let Some(r) = self.build_report() {
+            self.show_report_text(r.text);
+        }
+    }
+
+    /// Dialogue du bilan avec « Actualiser » à côté de « OK ».
+    fn show_report_text(&self, text: String) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let labels = [ux::Button::Refresh.label(), ux::Button::Ok.label()];
+            if dialogs::choose(&text, &labels).as_deref() == Some(ux::Button::Refresh.label()) {
+                let _ = proxy.send_event(UserEvent::RefreshReport);
+            }
+        });
     }
 
     fn view_for(&self, p: Provider) -> (String, Vec<String>, bool) {
@@ -703,7 +731,15 @@ impl App {
             let _ = proxy.send_event(UserEvent::Settings(a));
         });
         self.settings = SettingsWindow::open(mtm, send, self.cfg.launch_at_login);
-        self.show_provider(self.cfg.provider);
+        let p = self.cfg.provider;
+        self.show_provider(p);
+        if let Some(w) = &self.settings {
+            let key_exists = self.keys.get(&p).copied().unwrap_or(false);
+            w.focus(
+                !key_exists && p != Provider::LmStudio,
+                p == Provider::LmStudio,
+            );
+        }
     }
 
     fn on_models_loaded(&mut self, p: Provider, res: Result<Vec<String>, String>) {
@@ -759,6 +795,7 @@ impl App {
                     });
                 }
             }
+            SettingsAction::ShowPrompt => show_dialog(self.outgoing_prompt()),
             SettingsAction::Test => self.test_settings(),
             SettingsAction::Save => self.save_settings(),
         }
@@ -816,13 +853,11 @@ impl App {
             match autostart::set_enabled(f.autostart) {
                 Ok(()) => {
                     self.cfg.launch_at_login = f.autostart;
-                    self.menu.autostart.set_checked(f.autostart);
                 }
                 Err(e) => dialogs::notify(&format!("Lancement au démarrage impossible : {e}")),
             }
         }
         self.cfg.save();
-        self.menu.set_provider(p);
         if !f.key.is_empty() && p != Provider::LmStudio {
             let proxy = self.proxy.clone();
             let key = f.key;
@@ -831,7 +866,7 @@ impl App {
                 let _ = proxy.send_event(UserEvent::KeyEntered(p, res));
             });
         }
-        self.refresh_advice_line();
+        self.refresh_headline();
         dialogs::notify("Réglages enregistrés");
     }
 
@@ -841,48 +876,15 @@ impl App {
         };
         match action {
             Action::Quit => return true,
-            Action::Analyze => self.start_analysis(true),
-            Action::FullAdvice => {
-                if let Some(r) = self.build_report() {
-                    show_dialog(r.text);
+            Action::Report => {
+                if ux::report_stale(self.report_at, Instant::now()) {
+                    self.start_analysis(true);
+                } else {
+                    self.show_report();
                 }
             }
-            Action::Process(i) => self.ask_process(i),
-            Action::SecReveal(i) => {
-                if let Some(p) = self
-                    .findings
-                    .get(i)
-                    .and_then(|f| f.startup.clone().or_else(|| f.path.clone()))
-                {
-                    reveal_in_finder(p);
-                }
-            }
-            Action::SecKill(i) => {
-                if let Some(f) = self.findings.get(i).cloned() {
-                    std::thread::spawn(move || force_quit(f));
-                }
-            }
-            Action::ShowPrompt => show_dialog(self.outgoing_prompt()),
-            Action::Provider(p) => {
-                self.cfg.provider = p;
-                self.menu.set_provider(p);
-                self.cfg.save();
-                self.refresh_advice_line();
-            }
+            Action::Process(slot) => self.open_entry(slot),
             Action::Settings => self.open_settings(),
-            Action::Autostart => {
-                let want = self.menu.autostart.is_checked();
-                match autostart::set_enabled(want) {
-                    Ok(()) => {
-                        self.cfg.launch_at_login = want;
-                        self.cfg.save();
-                    }
-                    Err(e) => {
-                        self.menu.autostart.set_checked(!want);
-                        dialogs::notify(&format!("Lancement au démarrage impossible : {e}"));
-                    }
-                }
-            }
         }
         false
     }
@@ -904,42 +906,113 @@ impl App {
         )
     }
 
-    fn ask_process(&mut self, i: usize) {
-        let Some(info) = self.top.by_cpu.get(i).cloned() else {
+    fn finding_named(&self, name: &str) -> Option<&Finding> {
+        let key = known::normalize(name);
+        self.findings
+            .iter()
+            .find(|f| f.startup.is_none() && known::normalize(&f.name) == key)
+    }
+
+    /// Cible des boutons d'un dialogue de processus.
+    fn target_for(&self, name: &str, pid: u32) -> DialogTarget {
+        let finding = self.finding_named(name);
+        DialogTarget {
+            name: known::strip_decor(name).to_string(),
+            pid: (pid > 1).then_some(pid),
+            path: finding
+                .and_then(|f| f.path.clone())
+                .or_else(|| security::pid_path(pid)),
+            plist: None,
+            reasons: finding.map(|f| f.reasons.clone()).unwrap_or_default(),
+            suspect: finding.is_some(),
+        }
+    }
+
+    /// Clic sur une ligne de la liste « Processus ».
+    fn open_entry(&mut self, slot: usize) {
+        let Some(entry) = self.entries.get(slot).cloned() else {
             return;
         };
+        match entry.source {
+            ux::Source::Finding(i) => {
+                let Some(f) = self.findings.get(i).cloned() else {
+                    return;
+                };
+                if let Some(plist) = f.startup.clone() {
+                    let target = DialogTarget {
+                        name: f.name.clone(),
+                        pid: None,
+                        path: Some(plist.clone()),
+                        plist: Some(plist),
+                        reasons: f.reasons.clone(),
+                        suspect: true,
+                    };
+                    present(security_dialog(&f, None), target);
+                    return;
+                }
+                let info = self
+                    .top
+                    .by_cpu
+                    .iter()
+                    .chain(&self.top.extra)
+                    .find(|p| known::normalize(&p.name) == known::normalize(&f.name))
+                    .cloned()
+                    .unwrap_or(ProcInfo {
+                        name: f.name.clone(),
+                        pid: f.pid.unwrap_or(0),
+                        ..Default::default()
+                    });
+                self.ask_about(info, Some(f));
+            }
+            ux::Source::Proc(i) => {
+                if let Some(info) = self.top.by_cpu.get(i).cloned() {
+                    self.ask_about(info, None);
+                }
+            }
+        }
+    }
+
+    /// Explication d'un processus : base locale, cache, sinon IA. Pour un
+    /// suspect (hors mineur connu) l'IA reçoit les signaux collectés.
+    fn ask_about(&mut self, info: ProcInfo, finding: Option<Finding>) {
         let name = known::strip_decor(&info.name).to_string();
-        let finding = self
-            .findings
-            .iter()
-            .find(|f| f.startup.is_none() && known::normalize(&f.name) == known::normalize(&name))
-            .cloned();
+        let target = self.target_for(&info.name, info.pid);
         if let Some(f) = &finding
             && (f.miner || !self.has_key())
         {
-            show_dialog(security_dialog(f, None));
+            present(security_dialog(f, None), target);
             return;
         }
-        let k = report::judge(
-            &info,
-            &self.explanations,
-            &self.cfg.thresholds,
-            &self.findings,
-        );
-        if k.verdict != Verdict::Unknown {
-            show_dialog(format!(
-                "{} {name} — {}\n\n{}",
-                k.verdict.emoji(),
-                k.verdict.label(),
-                k.text
-            ));
-            return;
-        }
-        if !self.has_key() {
-            show_dialog(format!(
-                "❓ {name} — Inconnu\n\nConfigure une clé IA pour identifier ce processus (menu Réglages…)."
-            ));
-            return;
+        if finding.is_none() {
+            let k = report::judge(
+                &info,
+                &self.explanations,
+                &self.cfg.thresholds,
+                &self.findings,
+            );
+            if k.verdict != Verdict::Unknown {
+                present(
+                    format!(
+                        "{} {name} — {}\n\n{}\n\nCPU {:.0} % · mémoire {}",
+                        k.verdict.emoji(),
+                        k.verdict.label(),
+                        k.text,
+                        info.cpu,
+                        metrics::fmt_mem(info.mem)
+                    ),
+                    target,
+                );
+                return;
+            }
+            if !self.has_key() {
+                present(
+                    format!(
+                        "❓ {name} — Inconnu\n\nConfigure une clé IA pour identifier ce processus (menu Réglages…)."
+                    ),
+                    target,
+                );
+                return;
+            }
         }
         if !self.pending_procs.insert(info.name.clone()) {
             return;
@@ -980,11 +1053,56 @@ impl App {
             });
             let _ = proxy.send_event(UserEvent::ProcAnswer {
                 name: info.name,
+                pid: info.pid,
                 result,
                 security: is_security,
             });
         });
     }
+}
+
+/// Ce que les boutons d'un dialogue de processus peuvent viser.
+struct DialogTarget {
+    name: String,
+    pid: Option<u32>,
+    /// Programme (ou fichier .plist) à révéler dans le Finder.
+    path: Option<String>,
+    plist: Option<String>,
+    reasons: Vec<String>,
+    suspect: bool,
+}
+
+/// Dialogue d'un processus : OK seul pour un processus système ; sinon aussi
+/// « Afficher dans le Finder » et « Forcer à quitter… ».
+fn present(text: String, t: DialogTarget) {
+    let killable = t.pid.is_some() && t.plist.is_none();
+    let buttons = ux::process_buttons(t.path.as_deref(), t.suspect, killable);
+    std::thread::spawn(move || {
+        let labels: Vec<&str> = buttons.iter().map(|b| b.label()).collect();
+        let Some(choice) = dialogs::choose(&text, &labels).and_then(|l| ux::Button::from_label(&l))
+        else {
+            return;
+        };
+        match choice {
+            ux::Button::Reveal => {
+                if let Some(p) = t.path {
+                    reveal_in_finder(p);
+                }
+            }
+            ux::Button::Kill => force_quit(Finding {
+                name: t.name,
+                pid: t.pid,
+                path: t.path,
+                verdict: Verdict::Watch,
+                reasons: t.reasons,
+                miner: false,
+                signature: None,
+                ai: None,
+                startup: None,
+            }),
+            _ => {}
+        }
+    });
 }
 
 /// Texte du dialogue pour un élément de sécurité (avis IA optionnel).
@@ -1031,11 +1149,10 @@ fn force_quit(f: Finding) {
         dialogs::notify("Refusé : ce processus système ou illisible est protégé.");
         return;
     }
-    let msg = format!(
-        "Forcer « {} » (PID {pid}) à quitter ?\n\n{}",
-        f.name,
-        f.text()
-    );
+    let mut msg = format!("Forcer « {} » (PID {pid}) à quitter ?", f.name);
+    if !f.reasons.is_empty() {
+        msg.push_str(&format!("\n\n{}", f.text()));
+    }
     if !dialogs::confirm(&msg, "Forcer à quitter") {
         return;
     }
@@ -1276,6 +1393,16 @@ fn settings_demo(lm: bool) {
                 };
                 win = SettingsWindow::open(mtm, Box::new(|_| {}), true);
                 eprintln!("demo: fenêtre ouverte = {}", win.is_some());
+                // Vérifie aussi que le menu se construit (accélérateurs ⌘, et ⌘Q compris).
+                match AppMenu::build() {
+                    Ok(m) => {
+                        m.set_headline("✅ Tout va bien");
+                        m.set_busy(true);
+                        m.set_busy(false);
+                        eprintln!("demo: menu construit");
+                    }
+                    Err(e) => eprintln!("demo: menu en erreur : {e}"),
+                }
                 if let Some(w) = &win {
                     let p = if lm {
                         Provider::LmStudio

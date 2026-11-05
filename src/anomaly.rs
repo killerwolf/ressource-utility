@@ -43,6 +43,7 @@ pub struct Anomaly {
     pub kind: Kind,
     /// Processus principalement concerné (CPU / mémoire / processus).
     pub subject: Option<String>,
+    #[allow(dead_code)]
     pub detail: String,
 }
 

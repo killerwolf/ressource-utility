@@ -6,9 +6,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSButton, NSColor, NSComboBox, NSControlStateValueOff,
-    NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSScreen, NSSecureTextField,
-    NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSComboBox,
+    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder,
+    NSScreen, NSSecureTextField, NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -21,6 +22,7 @@ pub enum SettingsAction {
     Save,
     Cancel,
     DeleteKey,
+    ShowPrompt,
     Closed,
 }
 
@@ -60,6 +62,10 @@ define_class!(
         #[unsafe(method(cancelClicked:))]
         fn cancel_clicked(&self, _s: Option<&AnyObject>) {
             (self.ivars().send)(SettingsAction::Cancel);
+        }
+        #[unsafe(method(promptClicked:))]
+        fn prompt_clicked(&self, _s: Option<&AnyObject>) {
+            (self.ivars().send)(SettingsAction::ShowPrompt);
         }
         #[unsafe(method(deleteKeyClicked:))]
         fn delete_key_clicked(&self, _s: Option<&AnyObject>) {
@@ -114,8 +120,8 @@ fn s(text: &str) -> Retained<NSString> {
 }
 
 fn rect(x: f64, top: f64, w: f64, h: f64) -> NSRect {
-    // Origine AppKit en bas à gauche ; la fenêtre fait 330 pt de haut.
-    NSRect::new(NSPoint::new(x, 330.0 - top - h), NSSize::new(w, h))
+    // Origine AppKit en bas à gauche ; la fenêtre fait 420 pt de haut.
+    NSRect::new(NSPoint::new(x, 420.0 - top - h), NSSize::new(w, h))
 }
 
 fn add(parent: &NSView, child: &NSView) {
@@ -141,7 +147,7 @@ impl SettingsWindow {
             unsafe {
                 NSWindow::initWithContentRect_styleMask_backing_defer(
                     mtm.alloc(),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(440.0, 330.0)),
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(440.0, 420.0)),
                     style,
                     NSBackingStoreType::Buffered,
                     false,
@@ -154,13 +160,39 @@ impl SettingsWindow {
         window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         let content = window.contentView()?;
 
+        // --- Général ---------------------------------------------------------
+        let heading = |text: &str, top: f64| {
+            let l = label(mtm, text, rect(20.0, top, 400.0, 18.0));
+            l.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
+            l
+        };
+        add(&content, &heading("Général", 16.0));
+        // SAFETY: pas de cible ni d'action.
+        let auto = unsafe {
+            NSButton::checkboxWithTitle_target_action(&s("Lancer au démarrage"), None, None, mtm)
+        };
+        auto.setFrame(rect(40.0, 42.0, 380.0, 20.0));
+        auto.setState(if autostart {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+        add(&content, &auto);
+
+        let sep = NSBox::initWithFrame(mtm.alloc(), rect(20.0, 76.0, 400.0, 1.0));
+        sep.setBoxType(NSBoxType::Separator);
+        add(&content, &sep);
+
+        // --- Intelligence artificielle --------------------------------------
+        add(&content, &heading("Intelligence artificielle", 90.0));
+
         add(
             &content,
-            &label(mtm, "Fournisseur", rect(20.0, 22.0, 115.0, 20.0)),
+            &label(mtm, "Fournisseur", rect(20.0, 126.0, 115.0, 20.0)),
         );
         let popup = NSPopUpButton::initWithFrame_pullsDown(
             mtm.alloc(),
-            rect(140.0, 18.0, 280.0, 26.0),
+            rect(140.0, 122.0, 280.0, 26.0),
             false,
         );
         for p in Provider::ALL {
@@ -175,17 +207,17 @@ impl SettingsWindow {
 
         add(
             &content,
-            &label(mtm, "Modèle", rect(20.0, 64.0, 115.0, 20.0)),
+            &label(mtm, "Modèle", rect(20.0, 168.0, 115.0, 20.0)),
         );
-        let combo = NSComboBox::initWithFrame(mtm.alloc(), rect(140.0, 60.0, 280.0, 26.0));
+        let combo = NSComboBox::initWithFrame(mtm.alloc(), rect(140.0, 164.0, 280.0, 26.0));
         combo.setCompletes(true);
         combo.setNumberOfVisibleItems(12);
         add(&content, &combo);
 
-        let key_label = label(mtm, "Clé API", rect(20.0, 106.0, 115.0, 20.0));
+        let key_label = label(mtm, "Clé API", rect(20.0, 210.0, 115.0, 20.0));
         add(&content, &key_label);
         let key_field =
-            NSSecureTextField::initWithFrame(mtm.alloc(), rect(140.0, 102.0, 280.0, 26.0));
+            NSSecureTextField::initWithFrame(mtm.alloc(), rect(140.0, 206.0, 280.0, 26.0));
         add(&content, &key_field);
         // SAFETY: cible et sélecteur définis sur `Target`.
         let key_delete = unsafe {
@@ -196,33 +228,37 @@ impl SettingsWindow {
                 mtm,
             )
         };
-        key_delete.setFrame(rect(300.0, 130.0, 125.0, 26.0));
+        key_delete.setFrame(rect(300.0, 234.0, 125.0, 26.0));
         add(&content, &key_delete);
 
-        let url_label = label(mtm, "Adresse du serveur", rect(20.0, 106.0, 120.0, 20.0));
+        let url_label = label(mtm, "Adresse du serveur", rect(20.0, 210.0, 120.0, 20.0));
         add(&content, &url_label);
-        let url_field = NSTextField::initWithFrame(mtm.alloc(), rect(140.0, 102.0, 280.0, 26.0));
+        let url_field = NSTextField::initWithFrame(mtm.alloc(), rect(140.0, 206.0, 280.0, 26.0));
         add(&content, &url_field);
 
-        let hint = label(mtm, "", rect(140.0, 134.0, 280.0, 18.0));
+        let hint = label(mtm, "", rect(140.0, 238.0, 280.0, 18.0));
         hint.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
         add(&content, &hint);
 
-        // SAFETY: pas de cible ni d'action.
-        let auto = unsafe {
-            NSButton::checkboxWithTitle_target_action(&s("Lancer au démarrage"), None, None, mtm)
+        // Lien discret vers le texte exact envoyé à l'IA.
+        // SAFETY: cible et sélecteur définis sur `Target`.
+        let link = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &s("Voir ce qui est envoyé à l'IA…"),
+                Some(&target),
+                Some(sel!(promptClicked:)),
+                mtm,
+            )
         };
-        auto.setFrame(rect(140.0, 164.0, 280.0, 20.0));
-        auto.setState(if autostart {
-            NSControlStateValueOn
-        } else {
-            NSControlStateValueOff
-        });
-        add(&content, &auto);
+        link.setBordered(false);
+        link.setAlignment(NSTextAlignment::Left);
+        link.setContentTintColor(Some(&NSColor::linkColor()));
+        link.setFrame(rect(136.0, 266.0, 285.0, 20.0));
+        add(&content, &link);
 
         let status = NSTextField::wrappingLabelWithString(&s(""), mtm);
-        status.setFrame(rect(20.0, 200.0, 400.0, 70.0));
+        status.setFrame(rect(20.0, 298.0, 400.0, 56.0));
         add(&content, &status);
 
         let mk = |title: &str, sel, x: f64| {
@@ -230,7 +266,7 @@ impl SettingsWindow {
             let b = unsafe {
                 NSButton::buttonWithTitle_target_action(&s(title), Some(&target), Some(sel), mtm)
             };
-            b.setFrame(rect(x, 286.0, 95.0, 32.0));
+            b.setFrame(rect(x, 372.0, 95.0, 32.0));
             b
         };
         let test = mk("Tester", sel!(testClicked:), 20.0);
@@ -308,6 +344,18 @@ impl SettingsWindow {
             rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
         };
         data.is_some_and(|d| d.writeToFile_atomically(&s(path), true))
+    }
+
+    /// Place le curseur sur le premier champ utile.
+    pub fn focus(&self, key_missing: bool, local: bool) {
+        let r: &NSResponder = if local {
+            &self.url_field
+        } else if key_missing {
+            &self.key_field
+        } else {
+            &self.combo
+        };
+        self.window.makeFirstResponder(Some(r));
     }
 
     pub fn close(&self) {

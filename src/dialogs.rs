@@ -31,6 +31,35 @@ fn run(script: &str) -> Result<(bool, String), String> {
     ))
 }
 
+/// Dialogue à boutons ; le dernier est le bouton par défaut. Retourne le
+/// libellé du bouton choisi (bloquant : hors du thread principal).
+pub fn choose(text: &str, buttons: &[&str]) -> Option<String> {
+    let list: Vec<String> = buttons
+        .iter()
+        .map(|b| format!("\"{}\"", escape(b)))
+        .collect();
+    let default = buttons.last()?;
+    let script = format!(
+        "display dialog \"{}\" buttons {{{}}} default button \"{}\" with title \"{TITLE}\"",
+        escape(text),
+        list.join(", "),
+        escape(default),
+    );
+    match run(&script) {
+        Ok((true, out)) => parse_button(&out),
+        _ => None,
+    }
+}
+
+/// Extrait le bouton de `button returned:X` (avec un éventuel `, gave up:false`).
+pub fn parse_button(stdout: &str) -> Option<String> {
+    const MARKER: &str = "button returned:";
+    let rest = &stdout[stdout.find(MARKER)? + MARKER.len()..];
+    let rest = rest.lines().next().unwrap_or(rest);
+    let rest = rest.split(", gave up:").next().unwrap_or(rest);
+    Some(rest.trim().to_string())
+}
+
 /// Affiche un texte dans une boîte de dialogue (bloquant).
 pub fn show_text(text: &str) {
     let script = format!(
@@ -72,5 +101,18 @@ mod tests {
         assert_eq!(escape("a\rb"), "a\\rb");
         // Un backslash suivi d'un guillemet ne doit pas "s'échapper" du littéral.
         assert_eq!(escape("\\\""), "\\\\\\\"");
+    }
+
+    #[test]
+    fn parses_button_returned() {
+        assert_eq!(
+            parse_button("button returned:Forcer à quitter…\n"),
+            Some("Forcer à quitter…".into())
+        );
+        assert_eq!(
+            parse_button("button returned:OK, gave up:false\n"),
+            Some("OK".into())
+        );
+        assert_eq!(parse_button("rien"), None);
     }
 }

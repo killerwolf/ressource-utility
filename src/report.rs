@@ -251,7 +251,7 @@ pub fn build(i: &Inputs) -> Report {
         };
         let detail = if k.verdict == Verdict::Unknown {
             if i.has_key {
-                "Pas encore identifié. Relance « Analyser maintenant »."
+                "Pas encore identifié. Relance « Bilan de santé… »."
             } else {
                 "Inconnu — configure une clé IA pour l'identifier."
             }

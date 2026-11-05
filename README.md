@@ -60,11 +60,11 @@ Ce qui tourne
   - disque < 10 % ou < 10 Go libres
   - température > 90 °C
   - processus > 80 % CPU
-- Bilan clair en français : un verdict par processus (✅ normal, 👀 à surveiller, 🛑 anormal, ❓ inconnu), affiché dans le menu et dans « Voir le bilan »
+- Bilan clair en français : un verdict par processus (✅ normal, 👀 à surveiller, 🛑 anormal, ❓ inconnu), affiché dans la liste **Processus** du menu et dans **Bilan de santé…**
 - Base de connaissances locale (processus système macOS, aides de navigateurs et d'apps Electron) : aucun jeton consommé pour ce qui est connu
 - L'IA ne juge que les processus inconnus, avec un format de réponse strict ; le texte brut du modèle n'est jamais affiché, et les verdicts sont mis en cache à vie
 - Choix du fournisseur (Anthropic, Gemini, OpenAI/Codex, OpenRouter gratuit, LM Studio local) et du modèle
-- Sécurité 100 % locale (aucun jeton) : détection de mineurs de cryptomonnaie et de noms système usurpés, emplacements suspects, signature de code, audit du démarrage automatique ; 🛑 dans la barre des menus, sous-menu **Sécurité** (afficher dans le Finder, forcer à quitter avec confirmation)
+- Sécurité 100 % locale (aucun jeton) : détection de mineurs de cryptomonnaie et de noms système usurpés, emplacements suspects, signature de code, audit du démarrage automatique ; 🛑 dans la barre des menus ; les suspects apparaissent en premier dans la liste **Processus**, avec « Afficher dans le Finder » et « Forcer à quitter… » (après confirmation)
 - Clé API stockée dans le Trousseau macOS
 - Lancement au démarrage
 - Aucune icône dans le Dock
@@ -92,17 +92,15 @@ Ce qui tourne
 
 ## Configuration
 
-- Ouvrez le menu de la barre des menus puis :
-  - **Fournisseur IA** : changement rapide entre Anthropic, Gemini, OpenAI/Codex, OpenRouter (gratuit) et LM Studio (local).
-  - **Réglages…** : fenêtre native (fournisseur, modèle avec suggestions, clé API enregistrée dans le Trousseau macOS, adresse du serveur LM Studio, lancement au démarrage) avec un bouton **Tester**.
+- Le menu de la barre des menus contient : une phrase d'état (« ✅ Tout va bien », « ⚠️ Disque presque plein — 14 Go libres »…), les mesures avec mini-courbes, **Processus**, **Bilan de santé…**, **Réglages…** (⌘,) et **Quitter** (⌘Q).
+- **Réglages…** ouvre une fenêtre native avec deux sections : **Général** (lancement au démarrage) et **Intelligence artificielle** (fournisseur parmi Anthropic, Gemini, OpenAI/Codex, OpenRouter gratuit et LM Studio local ; modèle avec suggestions ; clé API enregistrée dans le Trousseau macOS ; adresse du serveur LM Studio ; bouton **Tester** ; lien **Voir ce qui est envoyé à l'IA…**).
 - Modèles par défaut : `claude-haiku-5-5`, `gemini-2.5-flash`, `gpt-5-mini`, `google/gemma-4-31b-it:free`, et le premier modèle chargé pour LM Studio.
 - Fichier de configuration : `~/Library/Application Support/ressource-utility/config.json`
 
 ## Essayer gratuitement avec OpenRouter
 
 1. Créez une clé sur <https://openrouter.ai/keys>.
-2. Dans le menu : **Fournisseur IA** puis **OpenRouter (gratuit)**.
-3. **Réglages…**, collez la clé puis **Enregistrer** (le bouton **Tester** vérifie la connexion).
+2. Dans **Réglages…**, choisissez le fournisseur **OpenRouter (gratuit)**, collez la clé puis **Enregistrer** (le bouton **Tester** vérifie la connexion).
 
 Le modèle par défaut est `google/gemma-4-31b-it:free` (un ancien réglage `openrouter/free` est migré automatiquement). Vous pouvez en saisir un autre via **Réglages…**. Le palier gratuit est limité en débit : en cas d'erreur 429, réessayez plus tard.
 
@@ -116,7 +114,7 @@ Les lignes CPU, mémoire et température du menu affichent une mini-courbe de la
 
 ## Confidentialité : ce qui est envoyé à l'IA
 
-- Rien n'est envoyé tant qu'aucune clé n'est configurée, ni quand tous les processus sont connus (menu **Voir ce qui sera envoyé à l'IA** affiche le texte exact).
+- Rien n'est envoyé tant qu'aucune clé n'est configurée, ni quand tous les processus sont connus (le lien **Voir ce qui est envoyé à l'IA…** de **Réglages…** affiche le texte exact).
 - Analyse : une ligne de métriques (CPU, RAM, disque, température), les alertes actives et, pour les seuls processus inconnus, `nom CPU % mémoire`.
 - Processus jugé suspect localement (et qui n'est pas un mineur connu) : en plus, ses signaux (par ex. « non signé »), l'état de sa signature et son chemin, avec votre dossier personnel remplacé par `~`. Les chemins des processus normaux ne sont jamais envoyés.
 - Les noms sont nettoyés (pas de retours à la ligne ni de `|`, longueur limitée). L'avis de l'IA ne peut qu'aggraver un verdict local, jamais l'adoucir. Le texte brut du modèle n'est jamais affiché.

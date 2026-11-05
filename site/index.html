@@ -155,9 +155,9 @@ Ce qui tourne
               <figcaption>Le texte du bilan, tel que l'application l'écrit (sortie réelle sur un Mac, sans clé IA configurée : les processus qu'elle ne connaît pas restent « Inconnu »).</figcaption>
             </figure>
             <figure>
-              <img class="shot" src="settings.png" width="440" height="330"
-                alt="Fenêtre Réglages : fournisseur OpenRouter (gratuit), modèle, clé API enregistrée dans le Trousseau, lancement au démarrage et boutons Tester, Annuler, Enregistrer." />
-              <figcaption>La fenêtre <strong>Réglages</strong> : fournisseur, modèle, clé API (dans le Trousseau macOS) et bouton <em>Tester</em>.</figcaption>
+              <img class="shot" src="settings.png" width="440" height="420"
+                alt="Fenêtre Réglages, section Général (lancement au démarrage) et section Intelligence artificielle : fournisseur OpenRouter (gratuit), modèle, clé API enregistrée dans le Trousseau, lien « Voir ce qui est envoyé à l'IA… » et boutons Tester, Annuler, Enregistrer." />
+              <figcaption>La fenêtre <strong>Réglages</strong> : une section Général, une section Intelligence artificielle (fournisseur, modèle, clé API dans le Trousseau macOS, bouton <em>Tester</em>).</figcaption>
             </figure>
           </div>
         </div>
@@ -168,9 +168,9 @@ Ce qui tourne
           <h2>Ce que ça fait</h2>
           <div class="grid">
             <div class="card"><span class="tag">Local</span><h3>Un verdict par processus</h3>
-              <p>✅ normal, 👀 à surveiller, 🛑 anormal, ❓ inconnu — dans le menu et dans « Voir le bilan ». Un processus connu qui pèse lourd passe en « à surveiller ».</p></div>
+              <p>✅ normal, 👀 à surveiller, 🛑 anormal, ❓ inconnu — dans la liste Processus du menu et dans « Bilan de santé… ». Un processus connu qui pèse lourd passe en « à surveiller ».</p></div>
             <div class="card"><span class="tag">Local</span><h3>Mineurs et logiciels suspects</h3>
-              <p>Noms de mineurs de cryptomonnaie connus, noms système usurpés, emplacements douteux, signature de code, éléments de démarrage automatique. Afficher dans le Finder ou forcer à quitter, avec confirmation.</p></div>
+              <p>Noms de mineurs de cryptomonnaie connus, noms système usurpés, emplacements douteux, signature de code, éléments de démarrage automatique. Depuis la liste Processus : afficher dans le Finder ou forcer à quitter, avec confirmation.</p></div>
             <div class="card"><span class="tag">Menu</span><h3>Mini-courbes d'une heure</h3>
               <p>CPU, mémoire et température, un point par minute, gardés en mémoire seulement.</p></div>
             <div class="card"><span class="tag">IA au choix</span><h3>Anthropic, Gemini, OpenAI, OpenRouter, LM Studio</h3>
@@ -187,7 +187,7 @@ Ce qui tourne
         <div class="wrap">
           <h2>Ce qui est envoyé à l'IA</h2>
           <ul class="privacy">
-            <li><strong>Rien sans clé</strong>, et rien quand tous les processus sont connus. Le menu « Voir ce qui sera envoyé à l'IA » affiche le texte exact.</li>
+            <li><strong>Rien sans clé</strong>, et rien quand tous les processus sont connus. Dans Réglages, « Voir ce qui est envoyé à l'IA… » affiche le texte exact.</li>
             <li><strong>Une ligne de métriques</strong> (CPU, RAM, disque, température), les alertes actives et, pour les seuls processus inconnus, <span class="pill">nom CPU % mémoire</span>.</li>
             <li><strong>Un processus jugé suspect</strong> : en plus ses signaux, l'état de sa signature et son chemin, dossier personnel remplacé par <span class="pill">~</span>. Jamais de chemin pour un processus normal.</li>
             <li><strong>Jamais</strong> : vos clés (stockées dans le Trousseau macOS), le contenu de vos fichiers, votre nom d'utilisateur, votre historique.</li>
