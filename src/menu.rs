@@ -85,9 +85,18 @@ pub struct AppMenu {
     disk: Line,
     temp: ChartLine,
     procs: Vec<Line>,
+    procs_sub: Submenu,
+    /// Nombre d'emplacements actuellement attachés au sous-menu.
+    procs_shown: std::cell::Cell<usize>,
     report: MenuItem,
     settings: MenuItem,
     quit: MenuItem,
+}
+
+/// Nombre de lignes à afficher dans « Processus » : autant que d'entrées,
+/// au moins 1 (ligne d'attente), au plus le nombre d'emplacements.
+fn visible_slots(entries: usize, slots: usize) -> usize {
+    entries.clamp(1, slots.max(1))
 }
 
 fn info(text: &str) -> MenuItem {
@@ -108,11 +117,11 @@ impl AppMenu {
 
         let procs_sub = Submenu::new("Processus", true);
         let procs: Vec<Line> = (0..SLOTS)
-            .map(|_| Line::new(MenuItem::new("—", false, None)))
+            .map(|_| Line::new(MenuItem::new("Mesures en cours…", false, None)))
             .collect();
-        for p in &procs {
-            procs_sub.append(&p.item)?;
-        }
+        // Un seul emplacement au départ : les autres ne sont attachés que
+        // lorsqu'il y a réellement un processus à afficher (pas de lignes vides).
+        procs_sub.append(&procs[0].item)?;
 
         let report = MenuItem::new("Bilan de santé…", true, None);
         let settings = MenuItem::new(
@@ -148,6 +157,8 @@ impl AppMenu {
             disk,
             temp,
             procs,
+            procs_sub,
+            procs_shown: std::cell::Cell::new(1),
             report,
             settings,
             quit,
@@ -191,14 +202,25 @@ impl AppMenu {
 
     /// Liste « Processus » : suspects d'abord, puis les plus gourmands.
     pub fn update_procs(&self, entries: &[Entry]) {
-        for (i, slot) in self.procs.iter().enumerate() {
+        // Toujours au moins une ligne, pour que le sous-menu ne soit jamais vide.
+        let wanted = visible_slots(entries.len(), self.procs.len());
+        let shown = self.procs_shown.get();
+        for slot in self.procs.iter().take(wanted).skip(shown) {
+            let _ = self.procs_sub.append(&slot.item);
+        }
+        for slot in self.procs.iter().take(shown).skip(wanted) {
+            let _ = self.procs_sub.remove(&slot.item);
+        }
+        self.procs_shown.set(wanted);
+
+        for (i, slot) in self.procs.iter().take(wanted).enumerate() {
             match entries.get(i) {
                 Some(e) => {
                     slot.set(e.label.clone());
                     slot.item.set_enabled(true);
                 }
                 None => {
-                    slot.set("—");
+                    slot.set("Aucun processus notable");
                     slot.item.set_enabled(false);
                 }
             }
@@ -237,6 +259,13 @@ pub fn one_line(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_submenu_has_no_empty_rows() {
+        assert_eq!(visible_slots(5, 8), 5);
+        assert_eq!(visible_slots(0, 8), 1);
+        assert_eq!(visible_slots(12, 8), 8);
+    }
 
     #[test]
     fn one_line_truncates() {
